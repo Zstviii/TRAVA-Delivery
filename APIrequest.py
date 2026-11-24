@@ -1,8 +1,9 @@
 import os
+from datetime import date
+
 import requests
 from dadata import Dadata
 from dotenv import load_dotenv
-from datetime import date
 
 load_dotenv()
 
@@ -13,6 +14,7 @@ def _get_base_url() -> str:
     if not BASE_URL:
         raise RuntimeError("Не задан POSIFLORA_BASE_URL.")
     return BASE_URL.rstrip("/")
+
 
 class PosiFloraAPI:
     def __init__(self):
@@ -29,7 +31,12 @@ class PosiFloraAPI:
             "Accept": "application/vnd.api+json",
         }
 
-    def get_orders(self, delivery_date: date | None = None, pageSize: int = 300, BoolDelivery: str = "true"):
+    def get_orders(
+        self,
+        delivery_date: date | None = None,
+        pageSize: int = 300,
+        BoolDelivery: str = "true",
+    ):
         """Получение списка заказов с возможностью выбора даты доставки и количества заказов на странице.
 
         Принимает:
@@ -50,7 +57,7 @@ class PosiFloraAPI:
         Вызывает исключение:
             RuntimeError - Если API возвращает ошибку HTTP.
         """
-            
+
         if delivery_date is None:
             delivery_date = date.today()
 
@@ -121,16 +128,14 @@ class PosiFloraAPI:
                 "data": {
                     "type": "orders-delivery-status",
                     "id": OrderID,
-                    "attributes": {
-                        "deliveryStatus": status
-                    }
+                    "attributes": {"deliveryStatus": status},
                 }
             },
             headers={
                 **self._auth_headers(),
                 "Content-Type": "application/vnd.api+json",
             },
-            timeout=20
+            timeout=20,
         )
 
         print("HTTP:", response.status_code)
@@ -141,8 +146,7 @@ class PosiFloraAPI:
                 result = response.json()
                 errors = result.get("errors", [])
                 message = "; ".join(
-                    error.get("title", "Неизвестная ошибка")
-                    for error in errors
+                    error.get("title", "Неизвестная ошибка") for error in errors
                 )
             except ValueError:
                 message = "Сервер вернул ответ в неожиданном формате"
@@ -157,7 +161,9 @@ class PosiFloraAPI:
 
         return response.json()
 
+
 class DadataAPI:
+    @staticmethod
     def check_adress(address: str) -> dict:
         """Проверка адреса через API DaData.
 
@@ -174,14 +180,19 @@ class DadataAPI:
         secret = os.getenv("DADATA_SECRET")
         if not address:
             raise ValueError("Адрес не может быть пустым.")
-        if not token and not secret:
-            raise RuntimeError("Не заданы токен и/или секрет DaData.")
-        
+        if not token:
+            raise RuntimeError("Не задан токен DaData.")
+
         dadata = Dadata(token, secret)
-        geoLat = dadata.clean("address", address).get("geo_lat", None)
-        geoLon = dadata.clean("address", address).get("geo_lon", None)
-        qc_geo = dadata.clean("address", address).get("qc_geo", None)
+        cleaned_address = dadata.clean("address", address)
+        if cleaned_address is None:
+            raise RuntimeError("DaData не вернул результат проверки адреса.")
+
+        geoLat = cleaned_address.get("geo_lat")
+        geoLon = cleaned_address.get("geo_lon")
+        qc_geo = cleaned_address.get("qc_geo")
         return {"geo_lat": geoLat, "geo_lon": geoLon, "qc_geo": qc_geo}
+
 
 if __name__ == "__main__":
     print(PosiFloraAPI().get_orders(date(2026, 11, 2)))
