@@ -1,11 +1,12 @@
 import os
 from datetime import date
+from pathlib import Path
 
 import requests
 from dadata import Dadata
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(Path(__file__).resolve().parent.parent / "Config" / ".env")
 
 BASE_URL = os.getenv("POSIFLORA_BASE_URL")
 
