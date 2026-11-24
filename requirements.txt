@@ -1,0 +1,4 @@
+customtkinter==6.0.0
+dadata==25.10.0
+python-dotenv==1.2.4
+requests==2.34.2
