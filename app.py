@@ -1,10 +1,11 @@
-
 import calendar
 import threading
-import customtkinter as ctk
 from datetime import date
-from APIrequest import PosiFloraAPI
 
+import customtkinter as ctk
+from requests.exceptions import RequestException
+
+from APIrequest import PosiFloraAPI
 
 # ==============================
 # ЦВЕТА ПРИЛОЖЕНИЯ
@@ -24,8 +25,18 @@ STATUS_COLOR = "#D7B978"
 API_SUCCESS_COLOR = "#83D19A"
 API_ERROR_COLOR = "#F28B82"
 MONTH_NAMES = (
-    "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
-    "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь",
+    "Январь",
+    "Февраль",
+    "Март",
+    "Апрель",
+    "Май",
+    "Июнь",
+    "Июль",
+    "Август",
+    "Сентябрь",
+    "Октябрь",
+    "Ноябрь",
+    "Декабрь",
 )
 WEEKDAY_NAMES = ("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс")
 
@@ -71,7 +82,6 @@ class App(ctk.CTk):
 
         # Загружаем заказы при запуске
         self.load_orders()
-
 
     # ==============================
     # БОКОВОЕ МЕНЮ
@@ -228,24 +238,15 @@ class App(ctk.CTk):
 
         # Общий контейнер для всех страниц
         self.content_frame = ctk.CTkFrame(
-            self,
-            fg_color=BACKGROUND_COLOR,
-            corner_radius=0
+            self, fg_color=BACKGROUND_COLOR, corner_radius=0
         )
 
-        self.content_frame.pack(
-            side="left",
-            fill="both",
-            expand=True,
-            padx=42,
-            pady=36
-        )
+        self.content_frame.pack(side="left", fill="both", expand=True, padx=42, pady=36)
 
         # Сохраняем страницы в словаре
         self.pages["Заказы"] = self._create_orders_page()
         self.pages["Курьеры"] = self._create_couriers_page()
         self.pages["Зоны доставок"] = self._create_zones_page()
-
 
     # ==============================
     # СТРАНИЦА ЗАКАЗОВ
@@ -254,9 +255,7 @@ class App(ctk.CTk):
     def _create_orders_page(self):
 
         page = ctk.CTkFrame(
-            self.content_frame,
-            fg_color=BACKGROUND_COLOR,
-            corner_radius=0
+            self.content_frame, fg_color=BACKGROUND_COLOR, corner_radius=0
         )
 
         page.place(relwidth=1, relheight=1)
@@ -309,10 +308,7 @@ class App(ctk.CTk):
         empty_state.pack(fill="both", expand=True, pady=(30, 0))
 
         # Блок сообщения
-        message = ctk.CTkFrame(
-            empty_state,
-            fg_color="transparent"
-        )
+        message = ctk.CTkFrame(empty_state, fg_color="transparent")
 
         message.place(relx=0.5, rely=0.5, anchor="center")
 
@@ -337,7 +333,6 @@ class App(ctk.CTk):
         self.orders_message.pack(pady=(8, 0))
 
         return page
-
 
     # ==============================
     # КАЛЕНДАРЬ ВЫБОРА ДАТЫ
@@ -373,7 +368,10 @@ class App(ctk.CTk):
         self._calendar_month = self.selected_date.replace(day=1)
         self.update_idletasks()
         x = self.date_picker_button.winfo_rootx()
-        y = self.date_picker_button.winfo_rooty() + self.date_picker_button.winfo_height()
+        y = (
+            self.date_picker_button.winfo_rooty()
+            + self.date_picker_button.winfo_height()
+        )
 
         self._calendar_popup = ctk.CTkToplevel(self)
         self._calendar_popup.title("Выберите дату")
@@ -498,7 +496,6 @@ class App(ctk.CTk):
         self._calendar_popup = None
         self.load_orders(selected_day)
 
-
     # ==============================
     # СТРАНИЦА КУРЬЕРОВ
     # ==============================
@@ -506,9 +503,7 @@ class App(ctk.CTk):
     def _create_couriers_page(self):
 
         page = ctk.CTkFrame(
-            self.content_frame,
-            fg_color=BACKGROUND_COLOR,
-            corner_radius=0
+            self.content_frame, fg_color=BACKGROUND_COLOR, corner_radius=0
         )
 
         page.place(relwidth=1, relheight=1)
@@ -517,11 +512,10 @@ class App(ctk.CTk):
             page,
             text="Курьеры",
             font=ctk.CTkFont(size=30, weight="bold"),
-            text_color=TEXT_COLOR
+            text_color=TEXT_COLOR,
         ).pack(anchor="w")
 
         return page
-
 
     # ==============================
     # СТРАНИЦА ЗОН ДОСТАВОК
@@ -530,9 +524,7 @@ class App(ctk.CTk):
     def _create_zones_page(self):
 
         page = ctk.CTkFrame(
-            self.content_frame,
-            fg_color=BACKGROUND_COLOR,
-            corner_radius=0
+            self.content_frame, fg_color=BACKGROUND_COLOR, corner_radius=0
         )
 
         page.place(relwidth=1, relheight=1)
@@ -541,11 +533,10 @@ class App(ctk.CTk):
             page,
             text="Зоны доставок",
             font=ctk.CTkFont(size=30, weight="bold"),
-            text_color=TEXT_COLOR
+            text_color=TEXT_COLOR,
         ).pack(anchor="w")
 
         return page
-
 
     # ==============================
     # ПЕРЕКЛЮЧЕНИЕ СТРАНИЦ
@@ -554,7 +545,6 @@ class App(ctk.CTk):
     def show_page(self, page_name):
         # Показываем выбранную страницу
         self.pages[page_name].tkraise()
-
 
     # ==============================
     # ЗАГРУЗКА ЗАКАЗОВ
@@ -578,7 +568,7 @@ class App(ctk.CTk):
         thread = threading.Thread(
             target=self._get_orders_from_api,
             args=(selected_day, request_id),
-            daemon=True
+            daemon=True,
         )
 
         thread.start()
@@ -607,9 +597,7 @@ class App(ctk.CTk):
         if len(reason) > 120:
             reason = reason[:117] + "..."
 
-        status_text = (
-            "API недоступен" if self._api_ever_responded else "Ошибка API"
-        )
+        status_text = "API недоступен" if self._api_ever_responded else "Ошибка API"
         self.api_status_dot.configure(text_color=API_ERROR_COLOR)
         self.api_status_label.configure(
             text=f"{status_text}: {reason}",
@@ -624,26 +612,19 @@ class App(ctk.CTk):
 
             try:
                 orders = self.api.get_orders(
-                    delivery_date=selected_day,
-                    pageSize=300,
-                    BoolDelivery="true"
+                    delivery_date=selected_day, pageSize=300, BoolDelivery="true"
                 )
 
                 if isinstance(orders, dict):
                     orders = orders.get("data", [])
 
-                self.after(
-                    0,
-                    lambda: self.on_orders_loaded(orders, None, request_id)
-                )
+                self.after(0, lambda: self.on_orders_loaded(orders, None, request_id))
 
-            except Exception as error:
+            except (RequestException, RuntimeError) as error:
                 error_text = str(error)
                 self.after(
-                    0,
-                    lambda: self.on_orders_loaded(None, error_text, request_id)
+                    0, lambda: self.on_orders_loaded(None, error_text, request_id)
                 )
-
 
     # ==============================
     # ОБРАБОТКА ПОЛУЧЕННЫХ ЗАКАЗОВ
@@ -656,13 +637,9 @@ class App(ctk.CTk):
         # Если произошла ошибка
         if error is not None:
 
-            self.orders_count.configure(
-                text="Ошибка загрузки"
-            )
+            self.orders_count.configure(text="Ошибка загрузки")
 
-            self.orders_message.configure(
-                text=error
-            )
+            self.orders_message.configure(text=error)
 
             self._set_api_status(error)
             self._schedule_api_check()
@@ -673,13 +650,9 @@ class App(ctk.CTk):
         self._set_api_status()
 
         # Выводим количество заказов
-        self.orders_count.configure(
-            text=f"Загружено заказов: {len(self.orders)}"
-        )
+        self.orders_count.configure(text=f"Загружено заказов: {len(self.orders)}")
 
-        self.orders_message.configure(
-            text="Данные успешно получены из Posiflora"
-        )
+        self.orders_message.configure(text="Данные успешно получены из Posiflora")
         self._schedule_api_check()
 
 
