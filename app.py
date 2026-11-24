@@ -332,7 +332,10 @@ class App(ctk.CTk):
                 justify="left",
                 wraplength=140,
             )
-            header_label.bind("<Configure>", self._fit_table_label)
+            header_label.bind(
+                "<Configure>",
+                lambda _event, label=header_label: self._fit_table_label(label),
+            )
             header_label.grid(row=0, column=column, sticky="ew", padx=10, pady=12)
 
         self.orders_table_body = ctk.CTkFrame(table, fg_color=SURFACE_COLOR)
@@ -665,10 +668,10 @@ class App(ctk.CTk):
         for row in self.orders_rows_frame.winfo_children():
             row.destroy()
 
-    def _fit_table_label(self, event):
-        wraplength = max(event.width - 16, 32)
-        if event.widget.cget("wraplength") != wraplength:
-            event.widget.configure(wraplength=wraplength)
+    def _fit_table_label(self, label):
+        wraplength = max(label.winfo_width() - 16, 32)
+        if label.cget("wraplength") != wraplength:
+            label.configure(wraplength=wraplength)
 
     def _show_orders_state(self, message, text_color=MUTED_COLOR):
         self._clear_order_rows()
@@ -704,7 +707,10 @@ class App(ctk.CTk):
                     justify="left",
                     wraplength=260 if column == 3 else 150,
                 )
-                cell.bind("<Configure>", self._fit_table_label)
+                cell.bind(
+                    "<Configure>",
+                    lambda _event, label=cell: self._fit_table_label(label),
+                )
                 cell.grid(
                     row=0,
                     column=column,
