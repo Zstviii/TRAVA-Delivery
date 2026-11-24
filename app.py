@@ -5,7 +5,7 @@ from datetime import date
 import customtkinter as ctk
 from requests.exceptions import RequestException
 
-from APIrequest import PosiFloraAPI
+from Module.APIrequest import PosiFloraAPI
 
 # ==============================
 # ЦВЕТА ПРИЛОЖЕНИЯ
