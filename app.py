@@ -6,6 +6,11 @@ import customtkinter as ctk
 from requests.exceptions import RequestException
 
 from Module.APIrequest import PosiFloraAPI
+from Module.order_processing import (
+    ORDER_COLUMN_HEADERS,
+    OrderTableRow,
+    prepare_orders,
+)
 
 # ==============================
 # ЦВЕТА ПРИЛОЖЕНИЯ
@@ -24,6 +29,7 @@ SIDEBAR_TEXT_COLOR = "#E1E9E3"
 STATUS_COLOR = "#D7B978"
 API_SUCCESS_COLOR = "#83D19A"
 API_ERROR_COLOR = "#F28B82"
+ORDER_COLUMN_WEIGHTS = (1.0, 1.5, 1.2, 2.8, 1.1, 1.2, 1.0)
 MONTH_NAMES = (
     "Январь",
     "Февраль",
@@ -59,6 +65,7 @@ class App(ctk.CTk):
 
         # Список полученных заказов
         self.orders = []
+        self.couriers_by_order_id = {}
         self.selected_date = date.today()
         self._orders_request_id = 0
         self._orders_lock = threading.Lock()
@@ -296,41 +303,66 @@ class App(ctk.CTk):
         )
         self.date_picker_button.pack(anchor="w")
 
-        # Основной блок страницы
-        empty_state = ctk.CTkFrame(
+        # Основной блок таблицы заказов
+        table = ctk.CTkFrame(
             page,
             fg_color=SURFACE_COLOR,
             corner_radius=14,
             border_width=1,
             border_color=BORDER_COLOR,
         )
+        table.pack(fill="both", expand=True, pady=(30, 0))
 
-        empty_state.pack(fill="both", expand=True, pady=(30, 0))
+        header = ctk.CTkFrame(
+            table,
+            fg_color="#EEF3EE",
+            corner_radius=10,
+        )
+        header.pack(fill="x", padx=10, pady=(10, 6))
+        for column, weight in enumerate(ORDER_COLUMN_WEIGHTS):
+            header.grid_columnconfigure(column, weight=int(weight * 10))
 
-        # Блок сообщения
-        message = ctk.CTkFrame(empty_state, fg_color="transparent")
+        for column, title in enumerate(ORDER_COLUMN_HEADERS):
+            header_label = ctk.CTkLabel(
+                header,
+                text=title,
+                font=ctk.CTkFont(family="Arial", size=12, weight="bold"),
+                text_color=TEXT_COLOR,
+                anchor="w",
+                justify="left",
+                wraplength=140,
+            )
+            header_label.bind("<Configure>", self._fit_table_label)
+            header_label.grid(row=0, column=column, sticky="ew", padx=10, pady=12)
 
-        message.place(relx=0.5, rely=0.5, anchor="center")
+        self.orders_table_body = ctk.CTkFrame(table, fg_color=SURFACE_COLOR)
+        self.orders_table_body.pack(fill="both", expand=True, padx=8, pady=(0, 8))
 
-        # Текст количества заказов
-        self.orders_count = ctk.CTkLabel(
-            message,
+        self.orders_scrollable_frame = ctk.CTkScrollableFrame(
+            self.orders_table_body,
+            fg_color=SURFACE_COLOR,
+            corner_radius=10,
+            scrollbar_button_color=PRIMARY_COLOR,
+            scrollbar_button_hover_color=PRIMARY_HOVER_COLOR,
+        )
+        self.orders_scrollable_frame.place(relwidth=1, relheight=1)
+        self.orders_rows_frame = ctk.CTkFrame(
+            self.orders_scrollable_frame,
+            fg_color="transparent",
+        )
+        self.orders_rows_frame.pack(fill="x", expand=True)
+        self.orders_rows_frame.grid_columnconfigure(0, weight=1)
+
+        self.orders_state_label = ctk.CTkLabel(
+            self.orders_table_body,
             text="Загрузка заказов...",
-            font=ctk.CTkFont(family="Arial", size=20, weight="bold"),
-            text_color=TEXT_COLOR,
-        )
-
-        self.orders_count.pack()
-
-        # Дополнительная информация
-        self.orders_message = ctk.CTkLabel(
-            message,
-            text="Ожидаем ответ от Posiflora",
-            font=ctk.CTkFont(family="Arial", size=13),
+            font=ctk.CTkFont(family="Arial", size=16, weight="bold"),
             text_color=MUTED_COLOR,
+            fg_color=SURFACE_COLOR,
+            wraplength=620,
+            justify="center",
         )
-
-        self.orders_message.pack(pady=(8, 0))
+        self.orders_state_label.place(relx=0.5, rely=0.5, anchor="center")
 
         return page
 
@@ -559,8 +591,7 @@ class App(ctk.CTk):
             self.after_cancel(self._api_check_after_id)
             self._api_check_after_id = None
 
-        self.orders_count.configure(text="Загрузка заказов...")
-        self.orders_message.configure(text="Ожидаем ответ от Posiflora")
+        self._show_orders_state("Загрузка заказов...")
         self._orders_request_id += 1
         request_id = self._orders_request_id
 
@@ -630,17 +661,71 @@ class App(ctk.CTk):
     # ОБРАБОТКА ПОЛУЧЕННЫХ ЗАКАЗОВ
     # ==============================
 
+    def _clear_order_rows(self):
+        for row in self.orders_rows_frame.winfo_children():
+            row.destroy()
+
+    def _fit_table_label(self, event):
+        wraplength = max(event.width - 16, 32)
+        if event.widget.cget("wraplength") != wraplength:
+            event.widget.configure(wraplength=wraplength)
+
+    def _show_orders_state(self, message, text_color=MUTED_COLOR):
+        self._clear_order_rows()
+        self.orders_scrollable_frame.place_forget()
+        self.orders_state_label.configure(text=message, text_color=text_color)
+        self.orders_state_label.place(relx=0.5, rely=0.5, anchor="center")
+
+    def _render_orders_table(self, rows: list[OrderTableRow]):
+        self._clear_order_rows()
+
+        if not rows:
+            self._show_orders_state("На выбранную дату заказов нет.")
+            return
+
+        for row_index, order in enumerate(rows):
+            row_frame = ctk.CTkFrame(
+                self.orders_rows_frame,
+                fg_color="#FAFCFA" if row_index % 2 == 0 else SURFACE_COLOR,
+                corner_radius=8,
+            )
+            row_frame.pack(fill="x", padx=2, pady=2)
+
+            for column, weight in enumerate(ORDER_COLUMN_WEIGHTS):
+                row_frame.grid_columnconfigure(column, weight=int(weight * 10))
+
+            for column, value in enumerate(order.values):
+                cell = ctk.CTkLabel(
+                    row_frame,
+                    text=value,
+                    font=ctk.CTkFont(family="Arial", size=12),
+                    text_color=TEXT_COLOR,
+                    anchor="w",
+                    justify="left",
+                    wraplength=260 if column == 3 else 150,
+                )
+                cell.bind("<Configure>", self._fit_table_label)
+                cell.grid(
+                    row=0,
+                    column=column,
+                    sticky="nsew",
+                    padx=10,
+                    pady=10,
+                )
+
+        self.orders_state_label.place_forget()
+        self.orders_scrollable_frame.place(relwidth=1, relheight=1)
+
     def on_orders_loaded(self, orders, error, request_id):
         if request_id != self._orders_request_id:
             return
 
         # Если произошла ошибка
         if error is not None:
-
-            self.orders_count.configure(text="Ошибка загрузки")
-
-            self.orders_message.configure(text=error)
-
+            self._show_orders_state(
+                f"Не удалось загрузить заказы:\n{error}",
+                text_color=API_ERROR_COLOR,
+            )
             self._set_api_status(error)
             self._schedule_api_check()
             return
@@ -648,11 +733,8 @@ class App(ctk.CTk):
         # Сохраняем полученные заказы
         self.orders = orders
         self._set_api_status()
-
-        # Выводим количество заказов
-        self.orders_count.configure(text=f"Загружено заказов: {len(self.orders)}")
-
-        self.orders_message.configure(text="Данные успешно получены из Posiflora")
+        table_rows = prepare_orders(self.orders, self.couriers_by_order_id)
+        self._render_orders_table(table_rows)
         self._schedule_api_check()
 
 
