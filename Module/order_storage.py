@@ -492,44 +492,50 @@ class OrderStore:
             couriers.append(courier)
         return couriers
 
-    def set_courier_zones(self, courier_id: int, zone_ids: list[int]) -> None:
-        if not isinstance(zone_ids, list) or any(
+    def set_zone_couriers(self, zone_id: int, courier_ids: list[int]) -> None:
+        if (
             isinstance(zone_id, bool)
             or not isinstance(zone_id, int)
             or zone_id <= 0
-            for zone_id in zone_ids
+            or not isinstance(courier_ids, list)
+            or any(
+                isinstance(courier_id, bool)
+                or not isinstance(courier_id, int)
+                or courier_id <= 0
+                for courier_id in courier_ids
+            )
         ):
-            raise ValueError("Некорректный список зон.")
-        normalized_ids = sorted(set(zone_ids))
+            raise ValueError("Некорректный список курьеров или зона.")
+        normalized_ids = sorted(set(courier_ids))
 
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             if connection.execute(
-                "SELECT 1 FROM couriers WHERE id = ?",
-                (courier_id,),
+                """
+                SELECT 1 FROM delivery_zones
+                WHERE id = ? AND is_active = 1
+                """,
+                (zone_id,),
             ).fetchone() is None:
-                raise ValueError("Курьер не найден.")
+                raise ValueError("Зона не найдена или уже не активна.")
 
-            for zone_id in normalized_ids:
+            for courier_id in normalized_ids:
                 if connection.execute(
-                    """
-                    SELECT 1 FROM delivery_zones
-                    WHERE id = ? AND is_active = 1
-                    """,
-                    (zone_id,),
+                    "SELECT 1 FROM couriers WHERE id = ?",
+                    (courier_id,),
                 ).fetchone() is None:
-                    raise ValueError("Выбрана несуществующая зона.")
+                    raise ValueError("Выбранный курьер не найден.")
 
             connection.execute(
-                "DELETE FROM courier_zone_assignments WHERE courier_id = ?",
-                (courier_id,),
+                "DELETE FROM courier_zone_assignments WHERE zone_id = ?",
+                (zone_id,),
             )
             connection.executemany(
                 """
                 INSERT INTO courier_zone_assignments (courier_id, zone_id)
                 VALUES (?, ?)
                 """,
-                [(courier_id, zone_id) for zone_id in normalized_ids],
+                [(courier_id, zone_id) for courier_id in normalized_ids],
             )
 
     def create_telegram_link_code(self, courier_id: int) -> str:

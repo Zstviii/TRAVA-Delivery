@@ -1073,15 +1073,15 @@ class App(ctk.CTk):
                 hover_color=PRIMARY_HOVER_COLOR,
                 text_color=SURFACE_COLOR,
                 command=lambda zone_id=int(zone["id"]), name=str(zone["name"]): (
-                    self._open_courier_zone_assignment(zone_id, name)
+                    self._open_zone_courier_assignment(zone_id, name)
                 ),
             ).grid(row=0, column=2, sticky="ew", padx=8, pady=6)
 
-    def _open_courier_zone_assignment(self, selected_zone_id: int, zone_name: str):
-        panel = self._open_side_panel(f"Распределение зон — {zone_name}", 520)
+    def _open_zone_courier_assignment(self, zone_id: int, zone_name: str):
+        panel = self._open_side_panel(f"Курьеры зоны — {zone_name}", 520)
         ctk.CTkLabel(
             panel,
-            text="Выберите курьера и закрепите за ним одну или несколько зон.",
+            text="Выберите курьеров, которые будут обслуживать эту зону.",
             font=ctk.CTkFont(size=12),
             text_color=MUTED_COLOR,
             justify="left",
@@ -1097,84 +1097,38 @@ class App(ctk.CTk):
             ).pack(anchor="w", pady=12)
             return
 
-        try:
-            zones = self.order_store.list_delivery_zones()
-        except sqlite3.Error as error:
-            self.database_error = error
-            self._set_database_status(error)
-            messagebox.showerror(
-                "Не удалось загрузить зоны",
-                str(error),
-                parent=self,
-            )
-            return
-
-        courier_labels = {
-            f"{courier['name']} — {courier['phone']}": courier
-            for courier in self.couriers
-        }
-        selected_label = ctk.StringVar(value=next(iter(courier_labels)))
-        ctk.CTkLabel(
-            panel,
-            text="Курьер",
-            font=ctk.CTkFont(size=12, weight="bold"),
-            text_color=TEXT_COLOR,
-        ).pack(anchor="w", pady=(4, 4))
-        ctk.CTkOptionMenu(
-            panel,
-            values=list(courier_labels),
-            variable=selected_label,
-            fg_color=PRIMARY_COLOR,
-            button_color=PRIMARY_HOVER_COLOR,
-            button_hover_color=PRIMARY_HOVER_COLOR,
-            dropdown_fg_color=SURFACE_COLOR,
-            dropdown_text_color=TEXT_COLOR,
-        ).pack(fill="x", pady=(0, 8))
-
-        zone_frame = ctk.CTkScrollableFrame(
+        courier_frame = ctk.CTkScrollableFrame(
             panel,
             fg_color=BACKGROUND_COLOR,
             corner_radius=10,
         )
-        zone_frame.pack(fill="both", expand=True, pady=(0, 10))
-        zone_checks: dict[int, ctk.BooleanVar] = {}
-
-        def render_zone_checks(*_):
-            for child in zone_frame.winfo_children():
-                child.destroy()
-            courier = courier_labels[selected_label.get()]
-            assigned_ids = set(courier["zone_ids"])
-            assigned_ids.add(selected_zone_id)
-            zone_checks.clear()
-            for zone in zones:
-                zone_id = int(zone["id"])
-                selected = ctk.BooleanVar(value=zone_id in assigned_ids)
-                zone_checks[zone_id] = selected
-                ctk.CTkCheckBox(
-                    zone_frame,
-                    text=str(zone["name"]),
-                    variable=selected,
-                    text_color=TEXT_COLOR,
-                ).pack(anchor="w", padx=8, pady=6)
-
-        selected_label.trace_add("write", render_zone_checks)
-        render_zone_checks()
+        courier_frame.pack(fill="both", expand=True, pady=(0, 10))
+        courier_checks: dict[int, ctk.BooleanVar] = {}
+        for courier in self.couriers:
+            courier_id = int(courier["id"])
+            selected = ctk.BooleanVar(value=zone_id in courier["zone_ids"])
+            courier_checks[courier_id] = selected
+            ctk.CTkCheckBox(
+                courier_frame,
+                text=f"{courier['name']} — {courier['phone']}",
+                variable=selected,
+                text_color=TEXT_COLOR,
+            ).pack(anchor="w", padx=8, pady=6)
 
         def save_assignment():
-            courier = courier_labels[selected_label.get()]
-            zone_ids = [
-                zone_id
-                for zone_id, variable in zone_checks.items()
+            courier_ids = [
+                courier_id
+                for courier_id, variable in courier_checks.items()
                 if variable.get()
             ]
             try:
-                self.order_store.set_courier_zones(int(courier["id"]), zone_ids)
+                self.order_store.set_zone_couriers(zone_id, courier_ids)
             except (ValueError, sqlite3.Error) as error:
                 if isinstance(error, sqlite3.Error):
                     self.database_error = error
                     self._set_database_status(error)
                 messagebox.showerror(
-                    "Не удалось назначить зоны",
+                    "Не удалось назначить курьеров",
                     str(error),
                     parent=self,
                 )
@@ -1186,7 +1140,7 @@ class App(ctk.CTk):
 
         ctk.CTkButton(
             panel,
-            text="Сохранить распределение",
+            text="Сохранить курьеров зоны",
             height=38,
             fg_color=PRIMARY_COLOR,
             hover_color=PRIMARY_HOVER_COLOR,

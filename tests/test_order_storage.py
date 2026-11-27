@@ -230,8 +230,8 @@ class OrderStoreTests(unittest.TestCase):
             "+7 922 222-22-22",
         )
 
-        self.store.set_courier_zones(courier_id, [zones[0]["id"], zones[1]["id"]])
-        self.store.set_courier_zones(another_courier_id, [zones[0]["id"]])
+        self.store.set_zone_couriers(zones[0]["id"], [courier_id, another_courier_id])
+        self.store.set_zone_couriers(zones[1]["id"], [courier_id])
 
         couriers = {
             courier["id"]: courier for courier in self.store.list_couriers()
@@ -250,11 +250,15 @@ class OrderStoreTests(unittest.TestCase):
             [courier_id],
         )
 
-        self.store.set_courier_zones(courier_id, [zones[1]["id"]])
+        self.store.set_zone_couriers(zones[0]["id"], [another_courier_id])
         updated_couriers = {
             courier["id"]: courier for courier in self.store.list_couriers()
         }
         self.assertEqual(updated_couriers[courier_id]["zone_ids"], [zones[1]["id"]])
+        self.assertEqual(
+            updated_couriers[another_courier_id]["zone_ids"],
+            [zones[0]["id"]],
+        )
         updated_zones = self.store.list_delivery_zones_with_couriers()
         self.assertEqual(
             [courier["id"] for courier in updated_zones[0]["couriers"]],
