@@ -74,7 +74,11 @@ class OrderStore:
                     zone_source TEXT,
                     zone_detection_status TEXT NOT NULL DEFAULT 'unavailable',
                     latitude REAL,
-                    longitude REAL
+                    longitude REAL,
+                    delivered_at TEXT,
+                    delivery_fee_kopecks INTEGER,
+                    is_paid INTEGER NOT NULL DEFAULT 0,
+                    paid_at TEXT
                 );
 
                 CREATE TABLE IF NOT EXISTS telegram_link_attempts (
@@ -97,6 +101,10 @@ class OrderStore:
                 ),
                 ("latitude", "REAL"),
                 ("longitude", "REAL"),
+                ("delivered_at", "TEXT"),
+                ("delivery_fee_kopecks", "INTEGER"),
+                ("is_paid", "INTEGER NOT NULL DEFAULT 0"),
+                ("paid_at", "TEXT"),
             ):
                 if name not in order_columns:
                     connection.execute(
@@ -760,9 +768,14 @@ class OrderStore:
             if allowed_next_status != status:
                 raise ValueError("Заказ больше не доступен для изменения.")
 
+            delivered_at = (
+                datetime.now().astimezone().isoformat()
+                if status == "Доставлен"
+                else row["delivered_at"]
+            )
             connection.execute(
-                "UPDATE orders SET status = ? WHERE id = ?",
-                (status, order_id),
+                "UPDATE orders SET status = ?, delivered_at = ? WHERE id = ?",
+                (status, delivered_at, order_id),
             )
             updated = connection.execute(
                 """
@@ -776,3 +789,114 @@ class OrderStore:
                 (order_id,),
             ).fetchone()
         return {"changed": True, "order": dict(updated)}
+
+    def list_courier_delivery_history(
+        self,
+        courier_id: int,
+        delivery_date: date | str,
+    ) -> list[dict[str, object]]:
+        requested_date = (
+            delivery_date.isoformat()
+            if isinstance(delivery_date, date)
+            else delivery_date
+        )
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, order_no, recipient, phone, street_address,
+                       order_date, delivery_time, comment, delivered_at,
+                       delivery_fee_kopecks, is_paid, paid_at
+                FROM orders
+                WHERE courier_id = ?
+                  AND status = 'Доставлен'
+                  AND COALESCE(substr(delivered_at, 1, 10), order_date) = ?
+                ORDER BY delivered_at, delivery_time, id
+                """,
+                (courier_id, requested_date),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def save_courier_delivery_amounts(
+        self,
+        courier_id: int,
+        delivery_date: date | str,
+        amounts: Mapping[int, int | None],
+    ) -> None:
+        requested_date = (
+            delivery_date.isoformat()
+            if isinstance(delivery_date, date)
+            else delivery_date
+        )
+        for amount in amounts.values():
+            if amount is not None and (
+                isinstance(amount, bool)
+                or not isinstance(amount, int)
+                or not 0 <= amount <= 999_999_999
+            ):
+                raise ValueError("Сумма оплаты должна быть от 0 до 9 999 999,99 ₽.")
+
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                """
+                SELECT id, is_paid
+                FROM orders
+                WHERE courier_id = ?
+                  AND status = 'Доставлен'
+                  AND COALESCE(substr(delivered_at, 1, 10), order_date) = ?
+                """,
+                (courier_id, requested_date),
+            ).fetchall()
+            eligible = {row["id"]: row["is_paid"] for row in rows}
+            if set(amounts) - eligible.keys():
+                raise ValueError("Один из заказов уже не относится к этой истории.")
+            if any(
+                amount is None and eligible[order_id]
+                for order_id, amount in amounts.items()
+            ):
+                raise ValueError("Нельзя удалить сумму уже оплаченного заказа.")
+
+            connection.executemany(
+                """
+                UPDATE orders
+                SET delivery_fee_kopecks = ?
+                WHERE id = ? AND courier_id = ? AND status = 'Доставлен'
+                  AND COALESCE(substr(delivered_at, 1, 10), order_date) = ?
+                """,
+                (
+                    (amount, order_id, courier_id, requested_date)
+                    for order_id, amount in amounts.items()
+                ),
+            )
+
+    def set_courier_delivery_paid(
+        self,
+        order_id: int,
+        courier_id: int,
+        is_paid: bool,
+    ) -> None:
+        if not isinstance(is_paid, bool):
+            raise ValueError("Некорректный статус оплаты.")
+
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            order = connection.execute(
+                """
+                SELECT delivery_fee_kopecks, is_paid
+                FROM orders
+                WHERE id = ? AND courier_id = ? AND status = 'Доставлен'
+                """,
+                (order_id, courier_id),
+            ).fetchone()
+            if order is None:
+                raise LookupError("Доставленный заказ этого курьера не найден.")
+            if is_paid and order["delivery_fee_kopecks"] is None:
+                raise ValueError("Сначала укажите и сохраните сумму за заказ.")
+            if bool(order["is_paid"]) == is_paid:
+                return
+
+            paid_at = datetime.now().astimezone().isoformat() if is_paid else None
+            connection.execute(
+                "UPDATE orders SET is_paid = ?, paid_at = ? WHERE id = ?",
+                (int(is_paid), paid_at, order_id),
+            )

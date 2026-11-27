@@ -4,6 +4,7 @@ import sqlite3
 import threading
 import webbrowser
 from datetime import date, datetime
+from decimal import Decimal, InvalidOperation
 from tkinter import messagebox
 
 import customtkinter as ctk
@@ -808,6 +809,13 @@ class App(ctk.CTk):
             text_color=TEXT_COLOR,
         ).pack(anchor="w")
 
+        ctk.CTkLabel(
+            page,
+            text="Нажмите на имя курьера, чтобы открыть историю доставок и расчёт оплаты.",
+            font=ctk.CTkFont(size=12),
+            text_color=MUTED_COLOR,
+        ).pack(anchor="w", pady=(6, 0))
+
         form = ctk.CTkFrame(page, fg_color="transparent")
         form.pack(fill="x", pady=(20, 12))
 
@@ -1309,9 +1317,19 @@ class App(ctk.CTk):
                 if telegram_chat_id
                 else "Не подключён"
             )
-            for column, value in enumerate(
-                (courier["name"], courier["phone"], telegram_label)
-            ):
+            ctk.CTkButton(
+                row,
+                text=str(courier["name"]),
+                fg_color="transparent",
+                hover_color="#EEF3EE",
+                text_color=TEXT_COLOR,
+                anchor="w",
+                command=lambda courier_id=courier_id, name=str(courier["name"]): (
+                    self._open_courier_history(courier_id, name)
+                ),
+            ).grid(row=0, column=0, sticky="ew", padx=6, pady=4)
+
+            for column, value in enumerate((courier["phone"], telegram_label), start=1):
                 ctk.CTkLabel(
                     row,
                     text=str(value),
@@ -1332,6 +1350,371 @@ class App(ctk.CTk):
                     self._create_telegram_link_code(courier_id)
                 ),
             ).grid(row=0, column=3, sticky="ew", padx=8, pady=6)
+
+    @staticmethod
+    def _parse_payment_amount(value: str) -> int | None:
+        normalized = value.strip().replace("\u00a0", "").replace(" ", "")
+        normalized = normalized.replace(",", ".")
+        if not normalized:
+            return None
+
+        try:
+            amount = Decimal(normalized)
+        except InvalidOperation as error:
+            raise ValueError("Введите сумму числом, например 250 или 250,50.") from error
+        if not amount.is_finite() or amount < 0:
+            raise ValueError("Сумма должна быть неотрицательным числом.")
+        if amount > Decimal("9999999.99"):
+            raise ValueError("Максимальная сумма за заказ — 9 999 999,99 ₽.")
+        try:
+            has_fractional_kopecks = amount != amount.quantize(Decimal("0.01"))
+        except InvalidOperation as error:
+            raise ValueError(
+                "Укажите сумму не более чем с двумя знаками после запятой."
+            ) from error
+        if has_fractional_kopecks:
+            raise ValueError("Укажите не более двух знаков после запятой.")
+        return int(amount * 100)
+
+    @staticmethod
+    def _format_payment_amount(amount_kopecks: int | None) -> str:
+        if amount_kopecks is None:
+            return ""
+        rubles, kopecks = divmod(amount_kopecks, 100)
+        return f"{rubles:,}".replace(",", " ") + f",{kopecks:02d}"
+
+    def _open_courier_history(self, courier_id: int, courier_name: str):
+        if self.order_store is None:
+            messagebox.showerror(
+                "База данных недоступна",
+                f"Не удалось открыть историю: {self.database_error}",
+                parent=self,
+            )
+            return
+
+        window = ctk.CTkToplevel(self)
+        window.title(f"История доставок — {courier_name}")
+        window.geometry("1180x720")
+        window.minsize(860, 560)
+        window.transient(self)
+
+        ctk.CTkLabel(
+            window,
+            text=f"История доставок — {courier_name}",
+            font=ctk.CTkFont(size=24, weight="bold"),
+            text_color=TEXT_COLOR,
+        ).pack(anchor="w", padx=18, pady=(16, 8))
+
+        controls = ctk.CTkFrame(window, fg_color="transparent")
+        controls.pack(fill="x", padx=18, pady=(0, 8))
+        ctk.CTkLabel(
+            controls,
+            text="Дата доставки",
+            font=ctk.CTkFont(size=12),
+            text_color=MUTED_COLOR,
+        ).pack(side="left", padx=(0, 8))
+        selected_day = date.today()
+        date_entry = ctk.CTkEntry(controls, width=145, height=36)
+        date_entry.insert(0, selected_day.strftime("%d.%m.%Y"))
+        date_entry.pack(side="left", padx=(0, 8))
+
+        history_orders: list[dict[str, object]] = []
+        payment_entries: dict[int, ctk.CTkEntry] = {}
+        totals_label = ctk.CTkLabel(
+            controls,
+            text="",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color=TEXT_COLOR,
+            anchor="w",
+        )
+        totals_label.pack(side="left", fill="x", expand=True, padx=8)
+        feedback_label = ctk.CTkLabel(
+            controls,
+            text="",
+            font=ctk.CTkFont(size=11),
+            text_color=SUCCESS_COLOR,
+        )
+        feedback_label.pack(side="left", padx=8)
+
+        table_header = ctk.CTkFrame(window, fg_color="#EEF3EE", corner_radius=8)
+        table_header.pack(fill="x", padx=18, pady=(4, 4))
+        column_weights = (1.0, 1.4, 2.4, 1.0, 1.2)
+        titles = ("Номер заказа", "Получатель", "Адрес", "Сумма, ₽", "Оплата")
+        for column, weight in enumerate(column_weights):
+            table_header.grid_columnconfigure(
+                column,
+                weight=int(weight * 10),
+                uniform="history_columns",
+            )
+        for column, title in enumerate(titles):
+            ctk.CTkLabel(
+                table_header,
+                text=title,
+                font=ctk.CTkFont(size=12, weight="bold"),
+                text_color=TEXT_COLOR,
+                anchor="w",
+            ).grid(row=0, column=column, sticky="ew", padx=10, pady=10)
+
+        history_frame = ctk.CTkScrollableFrame(
+            window,
+            fg_color=SURFACE_COLOR,
+            corner_radius=12,
+            border_width=1,
+            border_color=BORDER_COLOR,
+        )
+        history_frame.pack(fill="both", expand=True, padx=18, pady=(0, 14))
+
+        def money_text(amount_kopecks: int) -> str:
+            return f"{self._format_payment_amount(amount_kopecks)} ₽"
+
+        def update_totals(_event=None):
+            total = 0
+            paid = 0
+            missing = 0
+            invalid = 0
+            for order in history_orders:
+                entry = payment_entries.get(int(order["id"]))
+                if entry is None:
+                    continue
+                try:
+                    amount = self._parse_payment_amount(entry.get())
+                except ValueError:
+                    invalid += 1
+                    continue
+                if amount is None:
+                    missing += 1
+                    continue
+                total += amount
+                if order["is_paid"]:
+                    paid += amount
+
+            unpaid = total - paid
+            totals_label.configure(
+                text=(
+                    f"Всего: {money_text(total)}   "
+                    f"Оплачено: {money_text(paid)}   "
+                    f"Остаток: {money_text(unpaid)}"
+                )
+            )
+            details = []
+            if missing:
+                details.append(f"без суммы: {missing}")
+            if invalid:
+                details.append(f"проверьте ввод: {invalid}")
+            feedback_label.configure(
+                text=" · ".join(details),
+                text_color=ERROR_COLOR if invalid else MUTED_COLOR,
+            )
+
+        def render_history():
+            for child in history_frame.winfo_children():
+                child.destroy()
+            payment_entries.clear()
+
+            if not history_orders:
+                ctk.CTkLabel(
+                    history_frame,
+                    text="За выбранную дату доставленных заказов нет.",
+                    font=ctk.CTkFont(size=14),
+                    text_color=MUTED_COLOR,
+                ).pack(pady=24)
+                update_totals()
+                return
+
+            for row_index, order in enumerate(history_orders):
+                row = ctk.CTkFrame(
+                    history_frame,
+                    fg_color="#FAFCFA" if row_index % 2 == 0 else SURFACE_COLOR,
+                    corner_radius=8,
+                )
+                row.pack(fill="x", padx=4, pady=3)
+                for column, weight in enumerate(column_weights):
+                    row.grid_columnconfigure(
+                        column,
+                        weight=int(weight * 10),
+                        uniform="history_columns",
+                    )
+
+                for column, value in enumerate(
+                    (
+                        order["order_no"],
+                        order["recipient"],
+                        order["street_address"],
+                    )
+                ):
+                    ctk.CTkLabel(
+                        row,
+                        text=str(value or "—"),
+                        font=ctk.CTkFont(size=12),
+                        text_color=TEXT_COLOR,
+                        anchor="w",
+                        justify="left",
+                        wraplength=250 if column == 2 else 160,
+                    ).grid(
+                        row=0,
+                        column=column,
+                        sticky="ew",
+                        padx=10,
+                        pady=10,
+                    )
+
+                order_id = int(order["id"])
+                amount_entry = ctk.CTkEntry(
+                    row,
+                    width=110,
+                    height=32,
+                    placeholder_text="Например, 250",
+                )
+                amount_entry.insert(
+                    0,
+                    self._format_payment_amount(order["delivery_fee_kopecks"]),
+                )
+                amount_entry.bind("<KeyRelease>", update_totals)
+                amount_entry.grid(
+                    row=0,
+                    column=3,
+                    sticky="ew",
+                    padx=8,
+                    pady=6,
+                )
+                payment_entries[order_id] = amount_entry
+
+                is_paid = bool(order["is_paid"])
+                ctk.CTkButton(
+                    row,
+                    text="Оплачено" if is_paid else "Не оплачено",
+                    height=32,
+                    fg_color=PRIMARY_COLOR if is_paid else "#B38732",
+                    hover_color=PRIMARY_HOVER_COLOR if is_paid else "#956F28",
+                    text_color=SURFACE_COLOR,
+                    command=lambda item_id=order_id, paid=not is_paid: (
+                        toggle_payment_status(item_id, paid)
+                    ),
+                ).grid(row=0, column=4, sticky="ew", padx=8, pady=6)
+
+            update_totals()
+
+        def load_history(target_day: date):
+            nonlocal selected_day, history_orders
+            try:
+                history_orders = self.order_store.list_courier_delivery_history(
+                    courier_id,
+                    target_day,
+                )
+            except (OSError, sqlite3.Error) as error:
+                self.database_error = error
+                self._set_database_status(error)
+                messagebox.showerror(
+                    "Не удалось загрузить историю",
+                    str(error),
+                    parent=window,
+                )
+                return
+
+            selected_day = target_day
+            date_entry.delete(0, "end")
+            date_entry.insert(0, selected_day.strftime("%d.%m.%Y"))
+            feedback_label.configure(text="")
+            render_history()
+
+        def save_amounts(*, reload: bool = True) -> bool:
+            amounts: dict[int, int | None] = {}
+            try:
+                for order in history_orders:
+                    order_id = int(order["id"])
+                    amounts[order_id] = self._parse_payment_amount(
+                        payment_entries[order_id].get()
+                    )
+                self.order_store.save_courier_delivery_amounts(
+                    courier_id,
+                    selected_day,
+                    amounts,
+                )
+            except (ValueError, sqlite3.Error) as error:
+                if isinstance(error, sqlite3.Error):
+                    self.database_error = error
+                    self._set_database_status(error)
+                messagebox.showerror(
+                    "Не удалось сохранить суммы",
+                    str(error),
+                    parent=window,
+                )
+                return False
+
+            for order in history_orders:
+                order["delivery_fee_kopecks"] = amounts[int(order["id"])]
+            update_totals()
+            if reload:
+                load_history(selected_day)
+            else:
+                feedback_label.configure(
+                    text="Суммы сохранены",
+                    text_color=SUCCESS_COLOR,
+                )
+            return True
+
+        def toggle_payment_status(order_id: int, is_paid: bool):
+            if not save_amounts(reload=False):
+                return
+            try:
+                self.order_store.set_courier_delivery_paid(
+                    order_id,
+                    courier_id,
+                    is_paid,
+                )
+            except (ValueError, LookupError, sqlite3.Error) as error:
+                if isinstance(error, sqlite3.Error):
+                    self.database_error = error
+                    self._set_database_status(error)
+                messagebox.showerror(
+                    "Не удалось изменить оплату",
+                    str(error),
+                    parent=window,
+                )
+                return
+            load_history(selected_day)
+
+        def show_selected_date(_event=None):
+            try:
+                target_day = datetime.strptime(
+                    date_entry.get().strip(),
+                    "%d.%m.%Y",
+                ).date()
+            except ValueError:
+                messagebox.showerror(
+                    "Некорректная дата",
+                    "Введите дату в формате ДД.ММ.ГГГГ.",
+                    parent=window,
+                )
+                return
+            if not save_amounts(reload=False):
+                return
+            load_history(target_day)
+
+        ctk.CTkButton(
+            controls,
+            text="Показать",
+            width=100,
+            height=36,
+            fg_color=PRIMARY_COLOR,
+            hover_color=PRIMARY_HOVER_COLOR,
+            text_color=SURFACE_COLOR,
+            command=show_selected_date,
+        ).pack(side="left", padx=(0, 8))
+        date_entry.bind("<Return>", show_selected_date)
+
+        ctk.CTkButton(
+            controls,
+            text="Сохранить суммы",
+            width=150,
+            height=36,
+            fg_color=PRIMARY_COLOR,
+            hover_color=PRIMARY_HOVER_COLOR,
+            text_color=SURFACE_COLOR,
+            command=save_amounts,
+        ).pack(side="right")
+
+        load_history(selected_day)
 
     def _create_telegram_link_code(self, courier_id):
         if self.order_store is None:
