@@ -480,7 +480,7 @@ class OrderStore:
         with self._connection() as connection:
             row = connection.execute(
                 """
-                SELECT id, name, phone, telegram_username
+                SELECT id, name, phone, telegram_user_id, telegram_username
                 FROM couriers WHERE telegram_chat_id = ?
                 """,
                 (str(chat_id),),

@@ -275,6 +275,7 @@ class OrderStoreTests(unittest.TestCase):
 
         courier = self.store.get_courier_by_telegram_chat_id(12345)
         self.assertEqual(courier["name"], "Курьер")
+        self.assertEqual(courier["telegram_user_id"], "67890")
         self.assertEqual(courier["telegram_username"], "courier_user")
         with self.assertRaisesRegex(ValueError, "не найден или уже использован"):
             self.store.link_telegram_account(code, 12345, 67890, "courier_user")

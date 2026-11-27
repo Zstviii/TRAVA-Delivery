@@ -249,9 +249,8 @@ class TelegramBot:
         self._send_message(
             chat_id,
             f"Актуальные заказы для {str(courier['name'])[:100]}:",
+            reply_markup=self._orders_keyboard(orders),
         )
-        for order in orders:
-            self._send_order_message(chat_id, order)
 
     @staticmethod
     def _format_order(order: Mapping[str, object]) -> str:
@@ -283,40 +282,47 @@ class TelegramBot:
             text = text[: MESSAGE_LIMIT - 1] + "…"
         return text
 
-    def _send_order_message(
-        self, chat_id: int | str, order: Mapping[str, object]
-    ) -> None:
-        self._api_call(
-            "sendMessage",
-            {
-                "chat_id": chat_id,
-                "text": self._format_order(order),
-                "reply_markup": self._order_keyboard(order),
-            },
-        )
+    @staticmethod
+    def _orders_keyboard(
+        orders: list[Mapping[str, object]],
+    ) -> dict[str, object]:
+        buttons = []
+        for order in orders:
+            address = str(order.get("street_address") or "").strip()
+            suffix = f" · {order['order_no']}"
+            available_address_length = max(1, 63 - len(suffix))
+            if len(address) > available_address_length:
+                address = address[:available_address_length].rstrip() + "…"
+            button_text = f"{address or 'Адрес не указан'}{suffix}"
+            buttons.append(
+                [
+                    {
+                        "text": button_text[:64],
+                        "callback_data": f"order:{order['id']}:view",
+                    }
+                ]
+            )
+        return {"inline_keyboard": buttons}
 
     @staticmethod
     def _order_keyboard(order: Mapping[str, object]) -> dict[str, object]:
-        status = order.get("status")
-        if status == "Взят курьером":
-            button_text = "Доставляется"
-            action = "in_transit"
-        elif status == "Доставляется":
-            button_text = "Доставлен"
-            action = "delivered"
-        else:
-            return {"inline_keyboard": []}
-
-        return {
-            "inline_keyboard": [
+        rows = []
+        action = {
+            "Взят курьером": ("Доставляется", "in_transit"),
+            "Доставляется": ("Доставлен", "delivered"),
+        }.get(order.get("status"))
+        if action is not None:
+            button_text, action_name = action
+            rows.append(
                 [
                     {
                         "text": button_text,
-                        "callback_data": f"order:{order['id']}:{action}",
+                        "callback_data": f"order:{order['id']}:{action_name}",
                     }
                 ]
-            ]
-        }
+            )
+        rows.append([{"text": "← К заказам", "callback_data": "orders:list"}])
+        return {"inline_keyboard": rows}
 
     def _handle_callback_query(self, callback: Mapping[str, object]) -> None:
         callback_id = callback.get("id")
@@ -335,11 +341,36 @@ class TelegramBot:
         chat_id = chat.get("id") if isinstance(chat, Mapping) else None
         message_id = message.get("message_id")
         user_id = sender.get("id")
+        if chat_id is None or message_id is None or user_id is None:
+            return
+
+        if data == "orders:list":
+            self._handle_orders_list_callback(
+                callback_id,
+                chat_id,
+                message_id,
+                user_id,
+                message,
+            )
+            return
+
+        view_match = re.fullmatch(r"order:([1-9][0-9]{0,17}):view", data)
+        if view_match is not None:
+            self._handle_order_view_callback(
+                callback_id,
+                chat_id,
+                message_id,
+                user_id,
+                int(view_match.group(1)),
+                message,
+            )
+            return
+
         match = re.fullmatch(
             r"order:([1-9][0-9]{0,17}):(in_transit|delivered)",
             data,
         )
-        if chat_id is None or message_id is None or user_id is None or match is None:
+        if match is None:
             self._api_call(
                 "answerCallbackQuery",
                 {"callback_query_id": callback_id, "text": "Кнопка больше не доступна."},
@@ -401,6 +432,124 @@ class TelegramBot:
                     "message_id": message_id,
                     "text": desired_text,
                     "reply_markup": desired_markup,
+                },
+            )
+
+    def _handle_orders_list_callback(
+        self,
+        callback_id: object,
+        chat_id: int | str,
+        message_id: int,
+        user_id: int | str,
+        message: Mapping[str, object],
+    ) -> None:
+        try:
+            courier = self.order_store.get_courier_by_telegram_chat_id(chat_id)
+            if (
+                courier is None
+                or str(courier["telegram_user_id"]) != str(user_id)
+            ):
+                self._api_call(
+                    "answerCallbackQuery",
+                    {
+                        "callback_query_id": callback_id,
+                        "text": "Аккаунт курьера не подключён.",
+                    },
+                )
+                return
+
+            orders = self.order_store.list_current_orders_for_telegram(chat_id)
+        except sqlite3.Error:
+            self._api_call(
+                "answerCallbackQuery",
+                {
+                    "callback_query_id": callback_id,
+                    "text": "Не удалось загрузить заказы.",
+                },
+            )
+            return
+
+        text = (
+            f"Актуальные заказы для {str(courier['name'])[:100]}:"
+            if orders
+            else "Сейчас у вас нет актуальных заказов."
+        )
+        reply_markup = self._orders_keyboard(orders)
+        self._api_call(
+            "answerCallbackQuery",
+            {"callback_query_id": callback_id, "text": "Список заказов"},
+        )
+        if (
+            message.get("text") != text
+            or message.get("reply_markup") != reply_markup
+        ):
+            self._api_call(
+                "editMessageText",
+                {
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "text": text,
+                    "reply_markup": reply_markup,
+                },
+            )
+
+    def _handle_order_view_callback(
+        self,
+        callback_id: object,
+        chat_id: int | str,
+        message_id: int,
+        user_id: int | str,
+        order_id: int,
+        message: Mapping[str, object],
+    ) -> None:
+        try:
+            courier = self.order_store.get_courier_by_telegram_chat_id(chat_id)
+            if (
+                courier is None
+                or str(courier["telegram_user_id"]) != str(user_id)
+            ):
+                order = None
+            else:
+                order = next(
+                    (
+                        item
+                        for item in self.order_store.list_current_orders_for_telegram(
+                            chat_id
+                        )
+                        if int(item["id"]) == order_id
+                    ),
+                    None,
+                )
+        except (TypeError, ValueError, sqlite3.Error):
+            order = None
+
+        if order is None:
+            self._api_call(
+                "answerCallbackQuery",
+                {
+                    "callback_query_id": callback_id,
+                    "text": "Заказ больше не назначен вашему аккаунту.",
+                },
+            )
+            return
+
+        text = self._format_order(order)
+        reply_markup = self._order_keyboard(order)
+        self._api_call(
+            "answerCallbackQuery",
+            {"callback_query_id": callback_id, "text": "Карточка заказа"},
+        )
+        if (
+            message.get("text") != text
+            or message.get("reply_markup") != reply_markup
+        ):
+            self._api_call(
+                "editMessageText",
+                {
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "text": text,
+                    "reply_markup": reply_markup,
                 },
             )
 

@@ -95,18 +95,114 @@ class TelegramBotTests(unittest.TestCase):
                 }
             )
 
-        text = api_call.call_args.args[1]["text"]
-        self.assertIn("ORD-000001", text)
-        self.assertIn("Квартира: 15", text)
-        self.assertIn("Комментарий: Позвонить", text)
-        self.assertIn("Статус: Взят курьером", text)
+        self.assertEqual(api_call.call_count, 1)
+        payload = api_call.call_args.args[1]
+        self.assertIn("Актуальные заказы", payload["text"])
         self.assertEqual(
-            api_call.call_args.args[1]["reply_markup"]["inline_keyboard"][0][0][
-                "text"
+            payload["reply_markup"]["inline_keyboard"],
+            [
+                [
+                    {
+                        "text": "Ленина, 10 · ORD-000001",
+                        "callback_data": f"order:{order_id}:view",
+                    }
+                ]
             ],
-            "Доставляется",
         )
-        self.assertNotIn("Чужой получатель", text)
+        self.assertNotIn("Чужой получатель", str(payload))
+
+    def test_order_address_button_text_respects_telegram_limit(self):
+        markup = TelegramBot._orders_keyboard(
+            [
+                {
+                    "id": 123,
+                    "order_no": "ORD-000123",
+                    "street_address": "Улица " * 20,
+                }
+            ]
+        )
+
+        button = markup["inline_keyboard"][0][0]
+        self.assertLessEqual(len(button["text"]), 64)
+        self.assertTrue(button["text"].endswith(" · ORD-000123"))
+
+    def test_order_address_button_opens_details_and_returns_to_inline_list(self):
+        courier_id = self.store.add_courier("Курьер", "+7 911 111-11-11")
+        code = self.store.create_telegram_link_code(courier_id)
+        self.store.link_telegram_account(code, 12345, 12345, "courier")
+        order_id = self.store.create_order(
+            recipient="Получатель",
+            phone="+7 900 000-00-00",
+            street_address="Ленина, 10",
+            floor="2",
+            apartment="15",
+            order_date=date.today(),
+            delivery_time="12:30",
+            comment="Позвонить",
+        )
+        self.store.assign_courier(order_id, "+7 911 111-11-11")
+        bot = TelegramBot("test-token", self.store)
+        listed_order = self.store.list_current_orders_for_telegram(12345)[0]
+        list_message = {
+            "message_id": 88,
+            "chat": {"id": 12345},
+            "text": "Актуальные заказы для Курьер:",
+            "reply_markup": bot._orders_keyboard([listed_order]),
+        }
+
+        with patch.object(bot, "_api_call") as api_call:
+            bot._handle_update(
+                {
+                    "callback_query": {
+                        "id": "view-order",
+                        "from": {"id": 12345},
+                        "message": list_message,
+                        "data": f"order:{order_id}:view",
+                    }
+                }
+            )
+
+        detail_edit = api_call.call_args_list[1].args[1]
+        self.assertEqual(api_call.call_args_list[1].args[0], "editMessageText")
+        self.assertIn("Квартира: 15", detail_edit["text"])
+        self.assertIn("Комментарий: Позвонить", detail_edit["text"])
+        self.assertEqual(
+            detail_edit["reply_markup"]["inline_keyboard"],
+            [
+                [
+                    {
+                        "text": "Доставляется",
+                        "callback_data": f"order:{order_id}:in_transit",
+                    }
+                ],
+                [{"text": "← К заказам", "callback_data": "orders:list"}],
+            ],
+        )
+
+        detail_message = {
+            **list_message,
+            "text": detail_edit["text"],
+            "reply_markup": detail_edit["reply_markup"],
+        }
+        with patch.object(bot, "_api_call") as api_call:
+            bot._handle_update(
+                {
+                    "callback_query": {
+                        "id": "back-to-orders",
+                        "from": {"id": 12345},
+                        "message": detail_message,
+                        "data": "orders:list",
+                    }
+                }
+            )
+
+        list_edit = api_call.call_args_list[1].args[1]
+        self.assertEqual(api_call.call_args_list[1].args[0], "editMessageText")
+        self.assertIn("Актуальные заказы", list_edit["text"])
+        self.assertEqual(
+            list_edit["reply_markup"]["inline_keyboard"][0][0]["text"],
+            "Ленина, 10 · ORD-000001",
+        )
 
     def test_order_status_buttons_update_order_and_edit_the_existing_message(self):
         courier_id = self.store.add_courier("Курьер", "+7 911 111-11-11")
@@ -199,7 +295,11 @@ class TelegramBotTests(unittest.TestCase):
         self.assertIn("Статус: Доставлен", api_call.call_args_list[1].args[1]["text"])
         self.assertEqual(
             api_call.call_args_list[1].args[1]["reply_markup"],
-            {"inline_keyboard": []},
+            {
+                "inline_keyboard": [
+                    [{"text": "← К заказам", "callback_data": "orders:list"}]
+                ]
+            },
         )
         self.assertEqual(self.store.get_order(order_id)["status"], "Доставлен")
 
@@ -229,6 +329,38 @@ class TelegramBotTests(unittest.TestCase):
             )
 
         self.assertEqual(self.store.get_order(order_id)["status"], "Взят курьером")
+        self.assertEqual(api_call.call_args.args[0], "answerCallbackQuery")
+        self.assertIn("не назначен", api_call.call_args.args[1]["text"])
+
+    def test_order_view_button_rejects_another_telegram_user(self):
+        courier_id = self.store.add_courier("Курьер", "+7 911 111-11-11")
+        code = self.store.create_telegram_link_code(courier_id)
+        self.store.link_telegram_account(code, 12345, 12345, "courier")
+        order_id = self.store.create_order(
+            recipient="Получатель",
+            phone="+7 900 000-00-00",
+            street_address="Ленина, 10",
+            order_date=date.today(),
+        )
+        self.store.assign_courier(order_id, "+7 911 111-11-11")
+        bot = TelegramBot("test-token", self.store)
+
+        with patch.object(bot, "_api_call") as api_call:
+            bot._handle_update(
+                {
+                    "callback_query": {
+                        "id": "view-order",
+                        "from": {"id": 99999},
+                        "message": {
+                            "message_id": 88,
+                            "chat": {"id": 12345},
+                        },
+                        "data": f"order:{order_id}:view",
+                    }
+                }
+            )
+
+        self.assertEqual(api_call.call_count, 1)
         self.assertEqual(api_call.call_args.args[0], "answerCallbackQuery")
         self.assertIn("не назначен", api_call.call_args.args[1]["text"])
 
