@@ -7,6 +7,15 @@ from app import App
 
 
 class LocalOrderLoadingTests(unittest.TestCase):
+    def test_payment_amount_parser_supports_decimal_comma_and_currency_precision(self):
+        self.assertIsNone(App._parse_payment_amount(""))
+        self.assertEqual(App._parse_payment_amount("1 234,5"), 123450)
+        self.assertEqual(App._format_payment_amount(123450), "1 234,50")
+
+        for value in ("-1", "12,345", "1 0000000"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                App._parse_payment_amount(value)
+
     def test_orders_load_from_local_store_for_selected_day(self):
         selected_day = date(2026, 11, 27)
         store = Mock()

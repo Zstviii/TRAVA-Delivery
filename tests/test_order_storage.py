@@ -182,11 +182,82 @@ class OrderStoreTests(unittest.TestCase):
         )
         self.assertTrue(delivered["changed"])
         self.assertEqual(delivered["order"]["status"], "Доставлен")
+        self.assertIsNotNone(delivered["order"]["delivered_at"])
         self.assertFalse(
             self.store.set_courier_order_status(
                 order_id, 12345, 67890, "Доставлен"
             )["changed"]
         )
+
+    def test_delivery_history_amounts_and_paid_status_are_persisted(self):
+        courier_id = self.store.add_courier("Курьер", "+7 911 111-11-11")
+        code = self.store.create_telegram_link_code(courier_id)
+        self.store.link_telegram_account(code, 12345, 67890, "courier")
+        order_id = self.create_order()
+        self.store.assign_courier(order_id, "+7 911 111-11-11")
+        self.store.set_courier_order_status(
+            order_id, 12345, 67890, "Доставляется"
+        )
+        self.store.set_courier_order_status(
+            order_id, 12345, 67890, "Доставлен"
+        )
+
+        delivered_order = self.store.get_order(order_id)
+        delivered_day = date.fromisoformat(delivered_order["delivered_at"][:10])
+        history = self.store.list_courier_delivery_history(courier_id, delivered_day)
+        self.assertEqual([row["id"] for row in history], [order_id])
+        self.assertIsNone(history[0]["delivery_fee_kopecks"])
+        self.assertEqual(history[0]["is_paid"], 0)
+        self.assertEqual(
+            self.store.list_courier_delivery_history(
+                courier_id,
+                delivered_day + timedelta(days=1),
+            ),
+            [],
+        )
+
+        with self.assertRaisesRegex(ValueError, "Сначала укажите"):
+            self.store.set_courier_delivery_paid(order_id, courier_id, True)
+        with self.assertRaises(ValueError):
+            self.store.save_courier_delivery_amounts(
+                courier_id,
+                delivered_day,
+                {order_id: -1},
+            )
+
+        self.store.save_courier_delivery_amounts(
+            courier_id,
+            delivered_day,
+            {order_id: 12550},
+        )
+        self.store.set_courier_delivery_paid(order_id, courier_id, True)
+        paid_order = self.store.list_courier_delivery_history(
+            courier_id,
+            delivered_day,
+        )[0]
+        self.assertEqual(paid_order["delivery_fee_kopecks"], 12550)
+        self.assertEqual(paid_order["is_paid"], 1)
+        self.assertIsNotNone(paid_order["paid_at"])
+
+        with self.assertRaisesRegex(ValueError, "оплаченного"):
+            self.store.save_courier_delivery_amounts(
+                courier_id,
+                delivered_day,
+                {order_id: None},
+            )
+        self.store.set_courier_delivery_paid(order_id, courier_id, False)
+        self.store.save_courier_delivery_amounts(
+            courier_id,
+            delivered_day,
+            {order_id: None},
+        )
+        unpaid_order = self.store.list_courier_delivery_history(
+            courier_id,
+            delivered_day,
+        )[0]
+        self.assertIsNone(unpaid_order["delivery_fee_kopecks"])
+        self.assertEqual(unpaid_order["is_paid"], 0)
+        self.assertIsNone(unpaid_order["paid_at"])
 
     def test_required_order_data_and_duplicate_couriers_are_rejected(self):
         with self.assertRaises(ValueError):
