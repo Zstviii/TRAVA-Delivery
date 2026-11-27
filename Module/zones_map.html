@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ТРАВА — зоны доставки</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css">
+  <style>
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; font: 14px Arial, sans-serif; color: #24352b; }
+    .layout { display: flex; height: 100%; }
+    aside { width: 320px; min-width: 290px; padding: 20px; overflow-y: auto; background: #f5f7f4; }
+    h1 { margin: 0 0 10px; font-size: 23px; }
+    p { line-height: 1.45; color: #617267; }
+    input, button { width: 100%; min-height: 38px; margin: 6px 0; padding: 8px 10px; border: 1px solid #d5ded6; border-radius: 7px; font: inherit; }
+    button { border: 0; color: white; background: #3d654d; cursor: pointer; }
+    button:hover { background: #355a43; }
+    button.secondary { color: #24352b; background: #e3e9e3; }
+    .zone { display: flex; gap: 5px; align-items: center; margin-top: 6px; }
+    .zone input { flex: 1; min-width: 0; }
+    .zone button { width: 40px; min-width: 40px; padding: 4px; background: #a84b45; }
+    #status { min-height: 38px; white-space: pre-wrap; }
+    #map { flex: 1; min-width: 0; }
+    .leaflet-tooltip { font-weight: bold; }
+    @media (max-width: 680px) {
+      .layout { flex-direction: column; }
+      aside { width: 100%; min-width: 0; max-height: 42%; }
+      #map { min-height: 58%; }
+    }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <aside>
+      <h1>Зоны доставок</h1>
+      <p>Введите название зоны и нажмите «Нарисовать». Отметьте на карте точки границы, затем завершите контур двойным щелчком. Перетаскивайте вершины или удаляйте зоны инструментами на карте.</p>
+      <input id="zone-name" maxlength="80" placeholder="Например, Центр">
+      <button id="draw-zone">Нарисовать зону</button>
+      <button id="save-zones">Сохранить зоны</button>
+      <p id="status" role="status">Загрузка зон…</p>
+      <div id="zone-list"></div>
+    </aside>
+    <div id="map" aria-label="Карта зон доставки"></div>
+  </div>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+  <script>
+    const token = new URLSearchParams(location.search).get("token");
+    const apiUrl = `/api/zones?token=${encodeURIComponent(token || "")}`;
+    const status = document.getElementById("status");
+    const zoneNameInput = document.getElementById("zone-name");
+    const map = L.map("map").setView([58.6036, 49.668], 12);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+    }).addTo(map);
+    const zones = L.featureGroup().addTo(map);
+    new L.Control.Draw({
+      position: "topright",
+      draw: false,
+      edit: { featureGroup: zones, edit: true, remove: true }
+    }).addTo(map);
+
+    function setStatus(message, isError = false) {
+      status.textContent = message;
+      status.style.color = isError ? "#a1332d" : "#617267";
+    }
+
+    function addZone(zone) {
+      const feature = {
+        type: "Feature",
+        properties: { id: zone.id ?? null, name: zone.name },
+        geometry: zone.geometry
+      };
+      L.geoJSON(feature, {
+        style: { color: "#3d654d", fillColor: "#83b78f", fillOpacity: 0.28 },
+        onEachFeature: (item, layer) => {
+          layer.feature = item;
+          layer.bindTooltip(item.properties.name, { permanent: true });
+        }
+      }).eachLayer(layer => zones.addLayer(layer));
+    }
+
+    function renderZoneList() {
+      const list = document.getElementById("zone-list");
+      list.replaceChildren();
+      zones.eachLayer(layer => {
+        const row = document.createElement("div");
+        row.className = "zone";
+        const name = document.createElement("input");
+        name.maxLength = 80;
+        name.value = layer.feature.properties.name;
+        name.setAttribute("aria-label", "Название зоны");
+        name.addEventListener("change", () => {
+          layer.feature.properties.name = name.value.trim();
+          layer.unbindTooltip();
+          layer.bindTooltip(layer.feature.properties.name, { permanent: true });
+        });
+        const remove = document.createElement("button");
+        remove.textContent = "×";
+        remove.title = "Удалить зону";
+        remove.setAttribute("aria-label", `Удалить зону ${name.value}`);
+        remove.addEventListener("click", () => {
+          zones.removeLayer(layer);
+          renderZoneList();
+        });
+        row.append(name, remove);
+        list.append(row);
+      });
+    }
+
+    async function loadZones() {
+      const response = await fetch(apiUrl);
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Не удалось загрузить зоны.");
+      result.zones.forEach(addZone);
+      renderZoneList();
+      if (zones.getLayers().length) map.fitBounds(zones.getBounds(), { padding: [20, 20] });
+      setStatus(`Зон загружено: ${zones.getLayers().length}`);
+    }
+
+    document.getElementById("draw-zone").addEventListener("click", () => {
+      const name = zoneNameInput.value.trim();
+      if (!name) {
+        setStatus("Сначала укажите название зоны.", true);
+        zoneNameInput.focus();
+        return;
+      }
+      const drawer = new L.Draw.Polygon(map, {
+        allowIntersection: false,
+        showArea: true,
+        shapeOptions: { color: "#3d654d", fillColor: "#83b78f", fillOpacity: 0.28 }
+      });
+      drawer.enable();
+      setStatus("Отметьте точки границы и завершите контур двойным щелчком.");
+    });
+
+    map.on(L.Draw.Event.CREATED, event => {
+      const name = zoneNameInput.value.trim();
+      if (!name) {
+        setStatus("Зона не создана: укажите её название.", true);
+        return;
+      }
+      const feature = event.layer.toGeoJSON();
+      feature.properties = { id: null, name };
+      event.layer.feature = feature;
+      event.layer.bindTooltip(name, { permanent: true });
+      zones.addLayer(event.layer);
+      renderZoneList();
+      zoneNameInput.value = "";
+      setStatus("Контур добавлен. Сохраните изменения.");
+    });
+
+    map.on(L.Draw.Event.EDITED, renderZoneList);
+    map.on(L.Draw.Event.DELETED, renderZoneList);
+    document.getElementById("save-zones").addEventListener("click", async () => {
+      const saved = [];
+      zones.eachLayer(layer => {
+        const feature = layer.toGeoJSON();
+        saved.push({
+          id: layer.feature.properties.id,
+          name: layer.feature.properties.name.trim(),
+          geometry: feature.geometry
+        });
+      });
+      setStatus("Сохранение…");
+      try {
+        const response = await fetch(apiUrl, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ zones: saved })
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || "Не удалось сохранить зоны.");
+        zones.clearLayers();
+        result.zones.forEach(addZone);
+        renderZoneList();
+        setStatus(`Сохранено зон: ${result.zones.length}`);
+      } catch (error) {
+        setStatus(error.message, true);
+      }
+    });
+
+    loadZones().catch(error => setStatus(error.message, true));
+  </script>
+</body>
+</html>
