@@ -1,31 +1,26 @@
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
 
 ORDER_COLUMN_HEADERS = (
     "Номер заказа",
     "Получатель",
     "Номер телефона",
     "Адрес",
+    "Зона",
     "Время доставки",
     "Статус доставки",
+    "Комментарий",
     "Курьер",
 )
 
 EMPTY_VALUE = "—"
+ADDRESS_PREFIX = "Кировская область, Киров"
 
 
 @dataclass(frozen=True)
 class OrderTableRow:
     order_id: str | None
     values: tuple[str, ...]
-
-
-def _order_attributes(order: Mapping[str, object]) -> Mapping[str, object]:
-    attributes = order.get("attributes")
-    if isinstance(attributes, Mapping):
-        return attributes
-    return order
 
 
 def _display_value(value: object, fallback: str = EMPTY_VALUE) -> str:
@@ -35,122 +30,46 @@ def _display_value(value: object, fallback: str = EMPTY_VALUE) -> str:
     return text or fallback
 
 
-def _parse_datetime(value: object) -> datetime | None:
-    if isinstance(value, datetime):
-        return value
-    if isinstance(value, date):
-        return datetime.combine(value, datetime.min.time())
-    if not isinstance(value, str) or not value.strip():
-        return None
-
-    text = value.strip()
+def _order_sort_key(order: Mapping[str, object]) -> tuple[bool, str, int]:
+    delivery_time = _display_value(order.get("delivery_time"), "")
+    order_id = order.get("id")
     try:
-        return datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-
-
-def _order_sort_time(order: Mapping[str, object]) -> datetime | None:
-    attributes = _order_attributes(order)
-    parsed = _parse_datetime(attributes.get("deliveryTimeFrom"))
-    if parsed is None:
-        parsed = _parse_datetime(attributes.get("dueTime"))
-    if parsed is not None and parsed.tzinfo is not None:
-        return parsed.astimezone(timezone.utc).replace(tzinfo=None)
-    return parsed
-
-
-def _order_sort_key(order: Mapping[str, object]) -> tuple[bool, datetime]:
-    delivery_time = _order_sort_time(order)
-    return delivery_time is None, delivery_time or datetime.max
+        numeric_id = int(order_id) if order_id is not None else 0
+    except (TypeError, ValueError):
+        numeric_id = 0
+    return not bool(delivery_time), delivery_time, numeric_id
 
 
 def format_address(order: Mapping[str, object]) -> str:
-    attributes = _order_attributes(order)
-    parts = [
-        _display_value(attributes.get("deliveryCity"), ""),
-        _display_value(attributes.get("deliveryStreet"), ""),
-    ]
-
-    for field, prefix in (
-        ("deliveryHouse", "д. "),
-        ("deliveryBuilding", "корп. "),
-        ("deliveryApartment", "кв. "),
-    ):
-        value = _display_value(attributes.get(field), "")
-        if value:
-            parts.append(f"{prefix}{value}")
-
-    address = ", ".join(part for part in parts if part)
-    return address or EMPTY_VALUE
+    street_address = _display_value(order.get("street_address"), "")
+    if not street_address:
+        return EMPTY_VALUE
+    return f"{ADDRESS_PREFIX}, {street_address}"
 
 
-def _format_delivery_time(order: Mapping[str, object]) -> str:
-    attributes = _order_attributes(order)
-    start_value = attributes.get("deliveryTimeFrom")
-    end_value = attributes.get("deliveryTimeTo")
-
-    def display_time(value: object) -> str | None:
-        if value is None:
-            return None
-        parsed = _parse_datetime(value)
-        if parsed is not None:
-            return parsed.strftime("%H:%M")
-        text = _display_value(value, "")
-        return text or None
-
-    start = display_time(start_value)
-    end = display_time(end_value)
-    if start and end:
-        return f"{start}–{end}"
-    return start or end or EMPTY_VALUE
-
-
-def _order_id(order: Mapping[str, object]) -> str | None:
-    value = order.get("id")
-    if value is None:
-        return None
-    text = str(value).strip()
-    return text or None
-
-
-def _prepare_row(
-    order: Mapping[str, object],
-    couriers_by_order_id: Mapping[str, str],
-) -> OrderTableRow:
-    attributes = _order_attributes(order)
-    order_id = _order_id(order)
-    courier = (
-        couriers_by_order_id.get(order_id, EMPTY_VALUE)
-        if order_id is not None
-        else EMPTY_VALUE
-    )
-    status = _display_value(attributes.get("deliveryStatus"), "Не указан")
-
+def _prepare_row(order: Mapping[str, object]) -> OrderTableRow:
+    order_id = _display_value(order.get("id"), "")
     return OrderTableRow(
-        order_id=order_id,
+        order_id=order_id or None,
         values=(
-            _display_value(attributes.get("docNo")),
-            _display_value(attributes.get("deliveryContact")),
-            _display_value(attributes.get("deliveryPhoneNumber")),
+            _display_value(order.get("order_no")),
+            _display_value(order.get("recipient")),
+            _display_value(order.get("phone")),
             format_address(order),
-            _format_delivery_time(order),
-            status,
-            _display_value(courier),
+            _display_value(order.get("zone_name")),
+            _display_value(order.get("delivery_time")),
+            _display_value(order.get("status"), "Не указан"),
+            _display_value(order.get("comment")),
+            _display_value(order.get("courier_name")),
         ),
     )
 
 
-def prepare_orders(
-    orders: Iterable[object],
-    couriers_by_order_id: Mapping[str, str] | None = None,
-) -> list[OrderTableRow]:
-    courier_assignments = couriers_by_order_id or {}
+def prepare_orders(orders: Iterable[object]) -> list[OrderTableRow]:
     visible_orders = [
         order
         for order in orders
         if isinstance(order, Mapping)
-        and _order_attributes(order).get("deliveryStatus") != "delivered"
     ]
     visible_orders.sort(key=_order_sort_key)
-    return [_prepare_row(order, courier_assignments) for order in visible_orders]
+    return [_prepare_row(order) for order in visible_orders]
