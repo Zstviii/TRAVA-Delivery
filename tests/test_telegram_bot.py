@@ -127,6 +127,22 @@ class TelegramBotTests(unittest.TestCase):
         self.assertLessEqual(len(button["text"]), 64)
         self.assertTrue(button["text"].endswith(" · Доставляется"))
 
+    def test_order_message_formats_delivery_time_range(self):
+        order_id = self.store.create_order(
+            recipient="Получатель",
+            phone="+7 900 000-00-00",
+            street_address="Ленина, 10",
+            order_date=date.today(),
+            delivery_time="10:00",
+            delivery_time_end="12:30",
+        )
+        order = self.store.get_order(order_id)
+
+        self.assertIn(
+            f"Дата и время: {date.today().isoformat()} 10:00–12:30",
+            TelegramBot._format_order(order),
+        )
+
     def test_order_address_button_opens_details_and_returns_to_inline_list(self):
         courier_id = self.store.add_courier("Курьер", "+7 911 111-11-11")
         code = self.store.create_telegram_link_code(courier_id)

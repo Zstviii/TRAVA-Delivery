@@ -14,6 +14,7 @@ from Module.order_processing import (
     ADDRESS_PREFIX,
     ORDER_COLUMN_HEADERS,
     OrderTableRow,
+    format_delivery_time,
     prepare_orders,
 )
 from Module.order_storage import OrderStore
@@ -650,7 +651,33 @@ class App(ctk.CTk):
         floor_entry = add_entry(7, "Этаж")
         apartment_entry = add_entry(9, "Квартира")
         intercom_entry = add_entry(11, "Домофон")
-        time_entry = add_entry(13, "Время доставки", "Например, 14:30")
+        ctk.CTkLabel(
+            form,
+            text="Промежуток доставки",
+            font=ctk.CTkFont(family="Arial", size=12),
+            text_color=TEXT_COLOR,
+        ).grid(row=13, column=0, sticky="w", pady=(5, 3))
+        time_range = ctk.CTkFrame(form, fg_color="transparent")
+        time_range.grid(row=14, column=0, sticky="ew", pady=(0, 4))
+        time_range.grid_columnconfigure((0, 2), weight=1)
+        time_entry = ctk.CTkEntry(
+            time_range,
+            height=36,
+            placeholder_text="С, например 10:00",
+        )
+        time_entry.grid(row=0, column=0, sticky="ew")
+        ctk.CTkLabel(
+            time_range,
+            text="—",
+            font=ctk.CTkFont(size=14),
+            text_color=MUTED_COLOR,
+        ).grid(row=0, column=1, padx=8)
+        time_end_entry = ctk.CTkEntry(
+            time_range,
+            height=36,
+            placeholder_text="По, например 14:00",
+        )
+        time_end_entry.grid(row=0, column=2, sticky="ew")
 
         ctk.CTkLabel(
             form,
@@ -679,11 +706,24 @@ class App(ctk.CTk):
 
             try:
                 delivery_time = time_entry.get().strip()
-                if delivery_time:
-                    try:
-                        datetime.strptime(delivery_time, "%H:%M")
-                    except ValueError as error:
-                        raise ValueError("Время укажите в формате ЧЧ:ММ.") from error
+                delivery_time_end = time_end_entry.get().strip()
+                if delivery_time_end and not delivery_time:
+                    raise ValueError("Укажите начало промежутка доставки.")
+                for value in (delivery_time, delivery_time_end):
+                    if value:
+                        try:
+                            datetime.strptime(value, "%H:%M")
+                        except ValueError as error:
+                            raise ValueError(
+                                "Время укажите в формате ЧЧ:ММ."
+                            ) from error
+                if delivery_time and delivery_time_end:
+                    start_time = datetime.strptime(delivery_time, "%H:%M")
+                    end_time = datetime.strptime(delivery_time_end, "%H:%M")
+                    if end_time < start_time:
+                        raise ValueError(
+                            "Время окончания не может быть раньше начала."
+                        )
 
                 street_address = address_entry.get()
                 if (
@@ -741,6 +781,7 @@ class App(ctk.CTk):
                     intercom=intercom_entry.get(),
                     order_date=self.selected_date,
                     delivery_time=delivery_time,
+                    delivery_time_end=delivery_time_end,
                     comment=comment_entry.get("1.0", "end").strip(),
                     zone_id=zone_id,
                     zone_source="auto" if zone_id is not None else None,
@@ -1548,7 +1589,7 @@ class App(ctk.CTk):
             (9, "Квартира", order["apartment"]),
             (11, "Домофон", order["intercom"]),
             (13, "Дата доставки", order["order_date"]),
-            (15, "Время доставки", order["delivery_time"]),
+            (15, "Время доставки", format_delivery_time(order)),
             (17, "Комментарий", order["comment"]),
             (19, "Текущий статус", order["status"]),
         ):

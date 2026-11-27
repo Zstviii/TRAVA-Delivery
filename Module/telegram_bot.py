@@ -258,9 +258,13 @@ class TelegramBot:
             ADDRESS_PREFIX,
             str(order["street_address"]),
         ]
+        delivery_time = str(order.get("delivery_time") or "")
+        delivery_time_end = str(order.get("delivery_time_end") or "")
+        if delivery_time and delivery_time_end:
+            delivery_time = f"{delivery_time}–{delivery_time_end}"
         details = [
             f"Заказ {order['order_no']}",
-            f"Дата и время: {order['order_date']} {order['delivery_time']}".strip(),
+            f"Дата и время: {order['order_date']} {delivery_time}".strip(),
             f"Статус: {order['status']}",
             f"Получатель: {order['recipient']}",
             f"Телефон: {order['phone']}",

@@ -75,6 +75,7 @@ class OrderStore:
                     intercom TEXT NOT NULL DEFAULT '',
                     order_date TEXT NOT NULL,
                     delivery_time TEXT NOT NULL DEFAULT '',
+                    delivery_time_end TEXT NOT NULL DEFAULT '',
                     status TEXT NOT NULL DEFAULT 'Новый',
                     comment TEXT NOT NULL DEFAULT '',
                     courier_id INTEGER REFERENCES couriers(id) ON DELETE SET NULL,
@@ -102,6 +103,7 @@ class OrderStore:
             }
             for name, declaration in (
                 ("zone_id", "INTEGER REFERENCES delivery_zones(id) ON DELETE SET NULL"),
+                ("delivery_time_end", "TEXT NOT NULL DEFAULT ''"),
                 ("zone_source", "TEXT"),
                 (
                     "zone_detection_status",
@@ -167,6 +169,7 @@ class OrderStore:
         intercom: str = "",
         order_date: date | str,
         delivery_time: str = "",
+        delivery_time_end: str = "",
         comment: str = "",
         zone_id: int | None = None,
         zone_source: str | None = None,
@@ -177,8 +180,27 @@ class OrderStore:
         recipient = recipient.strip()
         phone = phone.strip()
         street_address = street_address.strip()
+        delivery_time = delivery_time.strip()
+        delivery_time_end = delivery_time_end.strip()
         if not recipient or not phone or not street_address:
             raise ValueError("Заполните имя получателя, телефон и адрес.")
+        if delivery_time_end and not delivery_time:
+            raise ValueError("Укажите начало промежутка доставки.")
+        for value in (delivery_time, delivery_time_end):
+            if value:
+                try:
+                    datetime.strptime(value, "%H:%M")
+                except ValueError as error:
+                    raise ValueError(
+                        "Время доставки укажите в формате ЧЧ:ММ."
+                    ) from error
+        if (
+            delivery_time
+            and delivery_time_end
+            and datetime.strptime(delivery_time_end, "%H:%M").time()
+            < datetime.strptime(delivery_time, "%H:%M").time()
+        ):
+            raise ValueError("Время окончания не может быть раньше начала.")
 
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -191,9 +213,10 @@ class OrderStore:
                 """
                 INSERT INTO orders (
                     recipient, phone, street_address, floor, apartment, intercom,
-                    order_date, delivery_time, comment, zone_id, zone_source,
-                    zone_detection_status, latitude, longitude
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    order_date, delivery_time, delivery_time_end, comment,
+                    zone_id, zone_source, zone_detection_status, latitude,
+                    longitude
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     recipient,
@@ -203,7 +226,8 @@ class OrderStore:
                     apartment.strip(),
                     intercom.strip(),
                     order_date.isoformat() if isinstance(order_date, date) else order_date,
-                    delivery_time.strip(),
+                    delivery_time,
+                    delivery_time_end,
                     comment.strip(),
                     zone_id,
                     zone_source,
@@ -228,7 +252,8 @@ class OrderStore:
                 """
                 SELECT o.id, o.order_no, o.recipient, o.phone, o.street_address,
                        o.floor, o.apartment, o.intercom, o.order_date,
-                       o.delivery_time, o.status, o.comment, o.zone_id,
+                       o.delivery_time, o.delivery_time_end, o.status,
+                       o.comment, o.zone_id,
                        o.zone_source, o.zone_detection_status, o.latitude,
                        o.longitude, c.name AS courier_name,
                        c.phone AS courier_phone, z.name AS zone_name
@@ -682,7 +707,8 @@ class OrderStore:
                 """
                 SELECT o.id, o.order_no, o.recipient, o.phone, o.street_address,
                        o.floor, o.apartment, o.intercom, o.order_date,
-                       o.delivery_time, o.comment, o.status, z.name AS zone_name
+                       o.delivery_time, o.delivery_time_end, o.comment,
+                       o.status, z.name AS zone_name
                 FROM orders AS o
                 JOIN couriers AS c ON c.id = o.courier_id
                 LEFT JOIN delivery_zones AS z ON z.id = o.zone_id

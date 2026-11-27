@@ -47,6 +47,14 @@ def format_address(order: Mapping[str, object]) -> str:
     return f"{ADDRESS_PREFIX}, {street_address}"
 
 
+def format_delivery_time(order: Mapping[str, object]) -> str:
+    start = _display_value(order.get("delivery_time"), "")
+    end = _display_value(order.get("delivery_time_end"), "")
+    if start and end:
+        return f"{start}–{end}"
+    return start or end
+
+
 def _prepare_row(order: Mapping[str, object]) -> OrderTableRow:
     order_id = _display_value(order.get("id"), "")
     return OrderTableRow(
@@ -57,7 +65,7 @@ def _prepare_row(order: Mapping[str, object]) -> OrderTableRow:
             _display_value(order.get("phone")),
             format_address(order),
             _display_value(order.get("zone_name")),
-            _display_value(order.get("delivery_time")),
+            _display_value(format_delivery_time(order)),
             _display_value(order.get("status"), "Не указан"),
             _display_value(order.get("comment")),
             _display_value(order.get("courier_name")),

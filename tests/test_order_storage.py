@@ -50,6 +50,20 @@ class OrderStoreTests(unittest.TestCase):
             "ORD-000002",
         )
 
+    def test_delivery_time_range_is_saved_and_validated(self):
+        order_id = self.create_order(
+            delivery_time="10:00",
+            delivery_time_end="12:30",
+        )
+        order = self.store.get_order(order_id)
+        self.assertEqual(order["delivery_time"], "10:00")
+        self.assertEqual(order["delivery_time_end"], "12:30")
+
+        with self.assertRaisesRegex(ValueError, "начало"):
+            self.create_order(delivery_time="", delivery_time_end="12:30")
+        with self.assertRaisesRegex(ValueError, "раньше"):
+            self.create_order(delivery_time="14:00", delivery_time_end="12:00")
+
     def test_order_fields_persist_and_courier_assignment_updates_phone(self):
         order_id = self.create_order()
         self.store.add_courier("Курьер", "+7 911 111-11-11")

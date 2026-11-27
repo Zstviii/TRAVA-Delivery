@@ -39,7 +39,6 @@ class PrepareOrdersTests(unittest.TestCase):
                 }
             ]
         )
-
         self.assertEqual(
             rows[0].values,
             (
@@ -54,6 +53,19 @@ class PrepareOrdersTests(unittest.TestCase):
                 "Алексей",
             ),
         )
+
+    def test_delivery_time_range_is_shown_in_orders_table(self):
+        rows = prepare_orders(
+            [
+                {
+                    "id": 1,
+                    "delivery_time": "10:00",
+                    "delivery_time_end": "12:30",
+                }
+            ]
+        )
+
+        self.assertEqual(rows[0].values[5], "10:00–12:30")
 
     def test_address_prefix_is_added_and_internal_address_details_are_not_shown(self):
         self.assertEqual(
