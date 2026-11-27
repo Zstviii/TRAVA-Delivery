@@ -908,8 +908,10 @@ class App(ctk.CTk):
             wraplength=680,
         ).pack(anchor="w", pady=(14, 12))
 
+        controls = ctk.CTkFrame(page, fg_color="transparent")
+        controls.pack(anchor="w", pady=(0, 14))
         ctk.CTkButton(
-            page,
+            controls,
             text="Открыть карту зон",
             width=190,
             height=40,
@@ -918,9 +920,238 @@ class App(ctk.CTk):
             hover_color=PRIMARY_HOVER_COLOR,
             text_color=SURFACE_COLOR,
             command=self._open_zone_map,
-        ).pack(anchor="w")
+        ).pack(side="left")
+        ctk.CTkButton(
+            controls,
+            text="Обновить список",
+            width=150,
+            height=40,
+            corner_radius=10,
+            fg_color="#E8ECE8",
+            hover_color="#DCE3DC",
+            text_color=TEXT_COLOR,
+            command=self._refresh_zone_assignments,
+        ).pack(side="left", padx=(8, 0))
+
+        zone_header = ctk.CTkFrame(page, fg_color="#EEF3EE", corner_radius=8)
+        zone_header.pack(fill="x", pady=(0, 4))
+        for column, weight in enumerate((1.1, 2.4, 1.0)):
+            zone_header.grid_columnconfigure(
+                column,
+                weight=int(weight * 10),
+                uniform="zone_assignment_columns",
+            )
+        for column, title in enumerate(("Зона", "Назначенные курьеры", "")):
+            ctk.CTkLabel(
+                zone_header,
+                text=title,
+                font=ctk.CTkFont(size=12, weight="bold"),
+                text_color=TEXT_COLOR,
+                anchor="w",
+            ).grid(row=0, column=column, sticky="ew", padx=10, pady=10)
+
+        self.zone_assignments_frame = ctk.CTkScrollableFrame(
+            page,
+            fg_color=SURFACE_COLOR,
+            corner_radius=14,
+            border_width=1,
+            border_color=BORDER_COLOR,
+        )
+        self.zone_assignments_frame.pack(fill="both", expand=True, pady=(4, 0))
 
         return page
+
+    def _refresh_zone_assignments(self):
+        if self.order_store is None:
+            return
+        try:
+            self.couriers = self.order_store.list_couriers()
+            zones = self.order_store.list_delivery_zones_with_couriers()
+        except sqlite3.Error as error:
+            self.database_error = error
+            self._set_database_status(error)
+            messagebox.showerror(
+                "Не удалось загрузить распределение зон",
+                str(error),
+                parent=self,
+            )
+            return
+
+        self._render_zone_assignments(zones)
+
+    def _render_zone_assignments(self, zones):
+        for child in self.zone_assignments_frame.winfo_children():
+            child.destroy()
+
+        if not zones:
+            ctk.CTkLabel(
+                self.zone_assignments_frame,
+                text="Зон пока нет. Создайте их на карте зон.",
+                font=ctk.CTkFont(size=14),
+                text_color=MUTED_COLOR,
+            ).pack(anchor="w", padx=14, pady=16)
+            return
+
+        for index, zone in enumerate(zones):
+            row = ctk.CTkFrame(
+                self.zone_assignments_frame,
+                fg_color="#FAFCFA" if index % 2 == 0 else SURFACE_COLOR,
+                corner_radius=8,
+            )
+            row.pack(fill="x", padx=4, pady=3)
+            for column, weight in enumerate((1.1, 2.4, 1.0)):
+                row.grid_columnconfigure(
+                    column,
+                    weight=int(weight * 10),
+                    uniform="zone_assignment_columns",
+                )
+
+            assigned_couriers = zone["couriers"]
+            names = ", ".join(str(courier["name"]) for courier in assigned_couriers)
+            for column, text in enumerate(
+                (
+                    str(zone["name"]),
+                    names or "Не назначены",
+                )
+            ):
+                ctk.CTkLabel(
+                    row,
+                    text=text,
+                    font=ctk.CTkFont(size=13),
+                    text_color=TEXT_COLOR,
+                    anchor="w",
+                    justify="left",
+                    wraplength=480,
+                ).grid(row=0, column=column, sticky="ew", padx=10, pady=10)
+
+            ctk.CTkButton(
+                row,
+                text="Назначить",
+                height=32,
+                fg_color=PRIMARY_COLOR,
+                hover_color=PRIMARY_HOVER_COLOR,
+                text_color=SURFACE_COLOR,
+                command=lambda zone_id=int(zone["id"]), name=str(zone["name"]): (
+                    self._open_courier_zone_assignment(zone_id, name)
+                ),
+            ).grid(row=0, column=2, sticky="ew", padx=8, pady=6)
+
+    def _open_courier_zone_assignment(self, selected_zone_id: int, zone_name: str):
+        panel = self._open_side_panel(f"Распределение зон — {zone_name}", 520)
+        ctk.CTkLabel(
+            panel,
+            text="Выберите курьера и закрепите за ним одну или несколько зон.",
+            font=ctk.CTkFont(size=12),
+            text_color=MUTED_COLOR,
+            justify="left",
+            wraplength=460,
+        ).pack(anchor="w", pady=(0, 8))
+
+        if not self.couriers:
+            ctk.CTkLabel(
+                panel,
+                text="Сначала добавьте курьера во вкладке «Курьеры».",
+                font=ctk.CTkFont(size=14),
+                text_color=TEXT_COLOR,
+            ).pack(anchor="w", pady=12)
+            return
+
+        try:
+            zones = self.order_store.list_delivery_zones()
+        except sqlite3.Error as error:
+            self.database_error = error
+            self._set_database_status(error)
+            messagebox.showerror(
+                "Не удалось загрузить зоны",
+                str(error),
+                parent=self,
+            )
+            return
+
+        courier_labels = {
+            f"{courier['name']} — {courier['phone']}": courier
+            for courier in self.couriers
+        }
+        selected_label = ctk.StringVar(value=next(iter(courier_labels)))
+        ctk.CTkLabel(
+            panel,
+            text="Курьер",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=TEXT_COLOR,
+        ).pack(anchor="w", pady=(4, 4))
+        ctk.CTkOptionMenu(
+            panel,
+            values=list(courier_labels),
+            variable=selected_label,
+            fg_color=PRIMARY_COLOR,
+            button_color=PRIMARY_HOVER_COLOR,
+            button_hover_color=PRIMARY_HOVER_COLOR,
+            dropdown_fg_color=SURFACE_COLOR,
+            dropdown_text_color=TEXT_COLOR,
+        ).pack(fill="x", pady=(0, 8))
+
+        zone_frame = ctk.CTkScrollableFrame(
+            panel,
+            fg_color=BACKGROUND_COLOR,
+            corner_radius=10,
+        )
+        zone_frame.pack(fill="both", expand=True, pady=(0, 10))
+        zone_checks: dict[int, ctk.BooleanVar] = {}
+
+        def render_zone_checks(*_):
+            for child in zone_frame.winfo_children():
+                child.destroy()
+            courier = courier_labels[selected_label.get()]
+            assigned_ids = set(courier["zone_ids"])
+            assigned_ids.add(selected_zone_id)
+            zone_checks.clear()
+            for zone in zones:
+                zone_id = int(zone["id"])
+                selected = ctk.BooleanVar(value=zone_id in assigned_ids)
+                zone_checks[zone_id] = selected
+                ctk.CTkCheckBox(
+                    zone_frame,
+                    text=str(zone["name"]),
+                    variable=selected,
+                    text_color=TEXT_COLOR,
+                ).pack(anchor="w", padx=8, pady=6)
+
+        selected_label.trace_add("write", render_zone_checks)
+        render_zone_checks()
+
+        def save_assignment():
+            courier = courier_labels[selected_label.get()]
+            zone_ids = [
+                zone_id
+                for zone_id, variable in zone_checks.items()
+                if variable.get()
+            ]
+            try:
+                self.order_store.set_courier_zones(int(courier["id"]), zone_ids)
+            except (ValueError, sqlite3.Error) as error:
+                if isinstance(error, sqlite3.Error):
+                    self.database_error = error
+                    self._set_database_status(error)
+                messagebox.showerror(
+                    "Не удалось назначить зоны",
+                    str(error),
+                    parent=self,
+                )
+                return
+
+            self._close_side_panel()
+            self._refresh_zone_assignments()
+            self.load_orders()
+
+        ctk.CTkButton(
+            panel,
+            text="Сохранить распределение",
+            height=38,
+            fg_color=PRIMARY_COLOR,
+            hover_color=PRIMARY_HOVER_COLOR,
+            text_color=SURFACE_COLOR,
+            command=save_assignment,
+        ).pack(fill="x")
 
     def _open_zone_map(self):
         if self.order_store is None:
@@ -953,8 +1184,11 @@ class App(ctk.CTk):
     # ==============================
 
     def show_page(self, page_name):
-        # Показываем выбранную страницу
+        if self._side_panel is not None:
+            self._close_side_panel()
         self.pages[page_name].tkraise()
+        if page_name == "Зоны доставок":
+            self._refresh_zone_assignments()
 
     # ==============================
     # ЗАГРУЗКА ЗАКАЗОВ
@@ -1087,6 +1321,7 @@ class App(ctk.CTk):
             self._show_orders_state("На выбранную дату заказов нет.")
             return
 
+        orders_by_id = {str(item.get("id")): item for item in self.orders}
         for row_index, order in enumerate(rows):
             row_frame = ctk.CTkFrame(
                 self.orders_rows_frame,
@@ -1107,6 +1342,48 @@ class App(ctk.CTk):
                 )
 
             for column, value in enumerate(order.values):
+                if column == len(ORDER_COLUMN_HEADERS) - 1:
+                    order_data = orders_by_id.get(str(order.order_id))
+                    if order_data is not None:
+                        choices, phone_by_label = self._courier_choices_for_order(
+                            order_data
+                        )
+                        current_phone = order_data.get("courier_phone")
+                        current_label = next(
+                            (
+                                label
+                                for label, phone in phone_by_label.items()
+                                if phone == current_phone
+                            ),
+                            "— Не назначен —",
+                        )
+                        courier_menu = ctk.CTkOptionMenu(
+                            row_frame,
+                            values=list(phone_by_label),
+                            variable=ctk.StringVar(value=current_label),
+                            width=140,
+                            height=32,
+                            fg_color=PRIMARY_COLOR,
+                            button_color=PRIMARY_HOVER_COLOR,
+                            button_hover_color=PRIMARY_HOVER_COLOR,
+                            dropdown_fg_color=SURFACE_COLOR,
+                            dropdown_text_color=TEXT_COLOR,
+                            command=lambda label, item=order_data, mapping=phone_by_label: (
+                                self._assign_order_courier(
+                                    item,
+                                    mapping[label],
+                                )
+                            ),
+                        )
+                        courier_menu.grid(
+                            row=0,
+                            column=column,
+                            sticky="ew",
+                            padx=6,
+                            pady=6,
+                        )
+                        continue
+
                 cell = ctk.CTkLabel(
                     row_frame,
                     text=value,
@@ -1131,6 +1408,79 @@ class App(ctk.CTk):
 
         self.orders_state_label.place_forget()
         self.orders_scrollable_frame.place(relwidth=1, relheight=1)
+
+    def _courier_choices_for_order(self, order, couriers=None):
+        zone_id = order.get("zone_id")
+        try:
+            zone_id = int(zone_id) if zone_id is not None else None
+        except (TypeError, ValueError):
+            zone_id = None
+
+        couriers = self._couriers_for_zone_first(
+            self.couriers if couriers is None else couriers,
+            zone_id,
+        )
+        name_counts: dict[str, int] = {}
+        for courier in couriers:
+            name = str(courier["name"])
+            name_counts[name] = name_counts.get(name, 0) + 1
+
+        choices = {}
+        for courier in couriers:
+            name = str(courier["name"])
+            is_zone_courier = (
+                zone_id is not None
+                and zone_id in courier.get("zone_ids", [])
+            )
+            label = (
+                f"{name} — {courier['phone']}"
+                if name_counts[name] > 1
+                else name
+            )
+            if is_zone_courier:
+                label += " · зона"
+            choices[label] = str(courier["phone"])
+        choices["— Не назначен —"] = None
+        return list(choices), choices
+
+    @staticmethod
+    def _couriers_for_zone_first(couriers, zone_id):
+        return sorted(
+            couriers,
+            key=lambda courier: (
+                zone_id is None or zone_id not in courier.get("zone_ids", []),
+                str(courier["name"]).casefold(),
+                int(courier["id"]),
+            ),
+        )
+
+    def _assign_order_courier(self, order, courier_phone):
+        if self.order_store is None:
+            messagebox.showerror(
+                "База данных недоступна",
+                str(self.database_error),
+                parent=self,
+            )
+            return
+        try:
+            self.order_store.update_order_assignment(
+                int(order["id"]),
+                courier_phone,
+                int(order["zone_id"]) if order["zone_id"] is not None else None,
+            )
+        except (ValueError, LookupError, sqlite3.Error) as error:
+            if isinstance(error, sqlite3.Error):
+                self.database_error = error
+                self._set_database_status(error)
+            messagebox.showerror(
+                "Не удалось назначить курьера",
+                str(error),
+                parent=self,
+            )
+            self.load_orders()
+            return
+
+        self.load_orders()
 
     def _open_order_details(self, order_id):
         if order_id is None:
@@ -1256,18 +1606,33 @@ class App(ctk.CTk):
         )
         zone_menu.grid(row=24, column=0, sticky="ew", pady=(0, 8))
 
-        courier_options = {"— Не назначен —": None}
-        courier_labels = {}
-        for courier in couriers:
-            label = f"{courier['name']} — {courier['phone']}"
-            courier_options[label] = str(courier["phone"])
-            courier_labels[str(courier["phone"])] = label
-        current_courier_phone = order["courier_phone"]
-        current_courier_label = (
-            courier_labels.get(str(current_courier_phone), "— Не назначен —")
-            if current_courier_phone
-            else "— Не назначен —"
+        current_zone_id = order["zone_id"]
+        courier_values, courier_options = self._courier_choices_for_order(
+            {"zone_id": current_zone_id},
+            couriers,
         )
+        courier_labels = {
+            phone: label
+            for label, phone in courier_options.items()
+            if phone is not None
+        }
+        current_courier_phone = order["courier_phone"]
+        if current_courier_phone:
+            current_courier_label = courier_labels.get(
+                str(current_courier_phone),
+                "— Не назначен —",
+            )
+        else:
+            zone_default = next(
+                (
+                    label
+                    for label in courier_values
+                    if label != "— Не назначен —"
+                    and " · зона" in label
+                ),
+                None,
+            )
+            current_courier_label = zone_default or "— Не назначен —"
         ctk.CTkLabel(
             details,
             text="Назначенный курьер",
@@ -1276,7 +1641,7 @@ class App(ctk.CTk):
         ).grid(row=25, column=0, sticky="w", pady=(8, 3))
         courier_menu = ctk.CTkOptionMenu(
             details,
-            values=list(courier_options),
+            values=courier_values,
             variable=ctk.StringVar(value=current_courier_label),
             fg_color=PRIMARY_COLOR,
             button_color=PRIMARY_HOVER_COLOR,
@@ -1285,6 +1650,40 @@ class App(ctk.CTk):
             dropdown_text_color=TEXT_COLOR,
         )
         courier_menu.grid(row=26, column=0, sticky="ew", pady=(0, 8))
+
+        def update_courier_choices(zone_label):
+            previous_phone = courier_options.get(courier_menu.get())
+            values, options = self._courier_choices_for_order(
+                {"zone_id": zone_options[zone_label]},
+                couriers,
+            )
+            courier_options.clear()
+            courier_options.update(options)
+            courier_menu.configure(values=values)
+            selected = (
+                next(
+                    (
+                        label
+                        for label, phone in courier_options.items()
+                        if phone == previous_phone
+                    ),
+                    None,
+                )
+                if previous_phone is not None
+                else None
+            )
+            if selected is None:
+                selected = next(
+                    (
+                        label
+                        for label in values
+                        if label != "— Не назначен —" and " · зона" in label
+                    ),
+                    "— Не назначен —",
+                )
+            courier_menu.set(selected)
+
+        zone_menu.configure(command=update_courier_choices)
 
         buttons = ctk.CTkFrame(details, fg_color="transparent")
         buttons.grid(row=27, column=0, sticky="ew", pady=(10, 8))

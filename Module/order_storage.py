@@ -56,6 +56,14 @@ class OrderStore:
                     is_active INTEGER NOT NULL DEFAULT 1
                 );
 
+                CREATE TABLE IF NOT EXISTS courier_zone_assignments (
+                    courier_id INTEGER NOT NULL
+                        REFERENCES couriers(id) ON DELETE CASCADE,
+                    zone_id INTEGER NOT NULL
+                        REFERENCES delivery_zones(id) ON DELETE CASCADE,
+                    PRIMARY KEY (courier_id, zone_id)
+                );
+
                 CREATE TABLE IF NOT EXISTS orders (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     order_no TEXT UNIQUE,
@@ -228,6 +236,11 @@ class OrderStore:
                 LEFT JOIN couriers AS c ON c.id = o.courier_id
                 LEFT JOIN delivery_zones AS z ON z.id = o.zone_id
                 WHERE o.order_date = ?
+                  AND o.status NOT IN (
+                      'delivered', 'Delivered', 'DELIVERED',
+                      'доставлен', 'Доставлен', 'ДОСТАВЛЕН',
+                      'доставлено', 'Доставлено', 'ДОСТАВЛЕНО'
+                  )
                 ORDER BY CASE WHEN o.delivery_time = '' THEN 1 ELSE 0 END,
                          o.delivery_time, o.id
                 """,
@@ -268,6 +281,39 @@ class OrderStore:
             }
             for row in rows
         ]
+
+    def list_delivery_zones_with_couriers(self) -> list[dict[str, object]]:
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT z.id AS zone_id, z.name AS zone_name,
+                       c.id AS courier_id, c.name AS courier_name
+                FROM delivery_zones AS z
+                LEFT JOIN courier_zone_assignments AS a ON a.zone_id = z.id
+                LEFT JOIN couriers AS c ON c.id = a.courier_id
+                WHERE z.is_active = 1
+                ORDER BY z.name, c.name, c.id
+                """
+            ).fetchall()
+
+        zones: list[dict[str, object]] = []
+        for row in rows:
+            if not zones or zones[-1]["id"] != row["zone_id"]:
+                zones.append(
+                    {
+                        "id": row["zone_id"],
+                        "name": row["zone_name"],
+                        "couriers": [],
+                    }
+                )
+            if row["courier_id"] is not None:
+                zones[-1]["couriers"].append(
+                    {
+                        "id": row["courier_id"],
+                        "name": row["courier_name"],
+                    }
+                )
+        return zones
 
     def replace_delivery_zones(
         self, zones: list[Mapping[str, object]]
@@ -399,11 +445,67 @@ class OrderStore:
         with self._connection() as connection:
             rows = connection.execute(
                 """
-                SELECT id, name, phone, telegram_chat_id, telegram_username
-                FROM couriers ORDER BY name, id
+                SELECT c.id, c.name, c.phone, c.telegram_chat_id,
+                       c.telegram_user_id, c.telegram_username,
+                       GROUP_CONCAT(z.id) AS zone_ids
+                FROM couriers AS c
+                LEFT JOIN courier_zone_assignments AS a ON a.courier_id = c.id
+                LEFT JOIN delivery_zones AS z
+                    ON z.id = a.zone_id AND z.is_active = 1
+                GROUP BY c.id
+                ORDER BY c.name, c.id
                 """
             ).fetchall()
-        return [dict(row) for row in rows]
+        couriers = []
+        for row in rows:
+            courier = dict(row)
+            courier["zone_ids"] = (
+                [int(zone_id) for zone_id in row["zone_ids"].split(",")]
+                if row["zone_ids"]
+                else []
+            )
+            couriers.append(courier)
+        return couriers
+
+    def set_courier_zones(self, courier_id: int, zone_ids: list[int]) -> None:
+        if not isinstance(zone_ids, list) or any(
+            isinstance(zone_id, bool)
+            or not isinstance(zone_id, int)
+            or zone_id <= 0
+            for zone_id in zone_ids
+        ):
+            raise ValueError("Некорректный список зон.")
+        normalized_ids = sorted(set(zone_ids))
+
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if connection.execute(
+                "SELECT 1 FROM couriers WHERE id = ?",
+                (courier_id,),
+            ).fetchone() is None:
+                raise ValueError("Курьер не найден.")
+
+            for zone_id in normalized_ids:
+                if connection.execute(
+                    """
+                    SELECT 1 FROM delivery_zones
+                    WHERE id = ? AND is_active = 1
+                    """,
+                    (zone_id,),
+                ).fetchone() is None:
+                    raise ValueError("Выбрана несуществующая зона.")
+
+            connection.execute(
+                "DELETE FROM courier_zone_assignments WHERE courier_id = ?",
+                (courier_id,),
+            )
+            connection.executemany(
+                """
+                INSERT INTO courier_zone_assignments (courier_id, zone_id)
+                VALUES (?, ?)
+                """,
+                [(courier_id, zone_id) for zone_id in normalized_ids],
+            )
 
     def create_telegram_link_code(self, courier_id: int) -> str:
         with self._connection() as connection:
@@ -586,9 +688,14 @@ class OrderStore:
                 LEFT JOIN delivery_zones AS z ON z.id = o.zone_id
                 WHERE c.telegram_chat_id = ?
                   AND o.order_date >= ?
-                  AND lower(o.status) NOT IN (
-                      'delivered', 'доставлен', 'доставлено',
-                      'cancelled', 'canceled', 'отменен', 'отменён'
+                  AND o.status NOT IN (
+                      'delivered', 'Delivered', 'DELIVERED',
+                      'доставлен', 'Доставлен', 'ДОСТАВЛЕН',
+                      'доставлено', 'Доставлено', 'ДОСТАВЛЕНО',
+                      'cancelled', 'Cancelled', 'CANCELLED',
+                      'canceled', 'Canceled', 'CANCELED',
+                      'отменен', 'Отменен', 'ОТМЕНЕН',
+                      'отменён', 'Отменён', 'ОТМЕНЁН'
                   )
                 ORDER BY o.order_date, o.delivery_time, o.id
                 """,

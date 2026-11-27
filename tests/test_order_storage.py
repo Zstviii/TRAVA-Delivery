@@ -188,6 +188,64 @@ class OrderStoreTests(unittest.TestCase):
                 order_id, 12345, 67890, "Доставлен"
             )["changed"]
         )
+        self.assertEqual(self.store.list_orders(date(2026, 11, 27)), [])
+
+    def test_couriers_can_be_assigned_to_multiple_zones(self):
+        zones = self.store.replace_delivery_zones(
+            [
+                {
+                    "name": name,
+                    "geometry": {
+                        "type": "Polygon",
+                        "coordinates": [
+                            [
+                                [49.0, 58.0],
+                                [50.0, 58.0],
+                                [50.0, 59.0],
+                                [49.0, 59.0],
+                            ]
+                        ],
+                    },
+                }
+                for name in ("Центр", "Север")
+            ]
+        )
+        courier_id = self.store.add_courier("Курьер", "+7 911 111-11-11")
+        another_courier_id = self.store.add_courier(
+            "Второй курьер",
+            "+7 922 222-22-22",
+        )
+
+        self.store.set_courier_zones(courier_id, [zones[0]["id"], zones[1]["id"]])
+        self.store.set_courier_zones(another_courier_id, [zones[0]["id"]])
+
+        couriers = {
+            courier["id"]: courier for courier in self.store.list_couriers()
+        }
+        self.assertEqual(
+            set(couriers[courier_id]["zone_ids"]),
+            {zone["id"] for zone in zones},
+        )
+        zones_with_couriers = self.store.list_delivery_zones_with_couriers()
+        self.assertEqual(
+            {courier["id"] for courier in zones_with_couriers[0]["couriers"]},
+            {courier_id, another_courier_id},
+        )
+        self.assertEqual(
+            [courier["id"] for courier in zones_with_couriers[1]["couriers"]],
+            [courier_id],
+        )
+
+        self.store.set_courier_zones(courier_id, [zones[1]["id"]])
+        updated_couriers = {
+            courier["id"]: courier for courier in self.store.list_couriers()
+        }
+        self.assertEqual(updated_couriers[courier_id]["zone_ids"], [zones[1]["id"]])
+        updated_zones = self.store.list_delivery_zones_with_couriers()
+        self.assertEqual(
+            [courier["id"] for courier in updated_zones[0]["couriers"]],
+            [another_courier_id],
+        )
 
     def test_delivery_history_amounts_and_paid_status_are_persisted(self):
         courier_id = self.store.add_courier("Курьер", "+7 911 111-11-11")
@@ -290,9 +348,26 @@ class OrderStoreTests(unittest.TestCase):
             order_date=date.today() + timedelta(days=1),
             recipient="Мария",
         )
+        delivered_order_id = self.create_order(
+            order_date=date.today(),
+            recipient="Уже доставлен",
+        )
         self.create_order(order_date=date.today() - timedelta(days=1))
         self.store.assign_courier(today_order_id, "+7 911 111-11-11")
         self.store.assign_courier(future_order_id, "+7 911 111-11-11")
+        self.store.assign_courier(delivered_order_id, "+7 911 111-11-11")
+        self.store.set_courier_order_status(
+            delivered_order_id,
+            12345,
+            67890,
+            "Доставляется",
+        )
+        self.store.set_courier_order_status(
+            delivered_order_id,
+            12345,
+            67890,
+            "Доставлен",
+        )
 
         orders = self.store.list_current_orders_for_telegram(12345)
 
