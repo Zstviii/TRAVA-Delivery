@@ -289,7 +289,8 @@ class TelegramBot:
         buttons = []
         for order in orders:
             address = str(order.get("street_address") or "").strip()
-            suffix = f" · {order['order_no']}"
+            status = str(order.get("status") or "Статус не указан")
+            suffix = f" · {status}"
             available_address_length = max(1, 63 - len(suffix))
             if len(address) > available_address_length:
                 address = address[:available_address_length].rstrip() + "…"

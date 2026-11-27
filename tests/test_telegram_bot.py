@@ -103,7 +103,7 @@ class TelegramBotTests(unittest.TestCase):
             [
                 [
                     {
-                        "text": "Ленина, 10 · ORD-000001",
+                        "text": "Ленина, 10 · Взят курьером",
                         "callback_data": f"order:{order_id}:view",
                     }
                 ]
@@ -118,13 +118,14 @@ class TelegramBotTests(unittest.TestCase):
                     "id": 123,
                     "order_no": "ORD-000123",
                     "street_address": "Улица " * 20,
+                    "status": "Доставляется",
                 }
             ]
         )
 
         button = markup["inline_keyboard"][0][0]
         self.assertLessEqual(len(button["text"]), 64)
-        self.assertTrue(button["text"].endswith(" · ORD-000123"))
+        self.assertTrue(button["text"].endswith(" · Доставляется"))
 
     def test_order_address_button_opens_details_and_returns_to_inline_list(self):
         courier_id = self.store.add_courier("Курьер", "+7 911 111-11-11")
@@ -201,7 +202,7 @@ class TelegramBotTests(unittest.TestCase):
         self.assertIn("Актуальные заказы", list_edit["text"])
         self.assertEqual(
             list_edit["reply_markup"]["inline_keyboard"][0][0]["text"],
-            "Ленина, 10 · ORD-000001",
+            "Ленина, 10 · Взят курьером",
         )
 
     def test_order_status_buttons_update_order_and_edit_the_existing_message(self):
