@@ -81,6 +81,9 @@ class App(ctk.CTk):
         self.selected_date = date.today()
         self._calendar_popup = None
         self._calendar_month = self.selected_date.replace(day=1)
+        self._side_panel = None
+        self._side_panel_width = 0
+        self.bind("<Configure>", self._resize_side_panel, add="+")
         self.telegram_stop_event = threading.Event()
         self.telegram_bot = None
         self.telegram_thread = None
@@ -602,15 +605,14 @@ class App(ctk.CTk):
         self.load_orders(selected_day)
 
     def _open_order_form(self):
-        window = ctk.CTkToplevel(self)
-        window.title("Создать заказ")
-        window.geometry("520x700")
-        window.minsize(480, 560)
-        window.transient(self)
-        window.grab_set()
+        form_panel = self._open_side_panel("Создать заказ", 540)
 
-        form = ctk.CTkScrollableFrame(window, fg_color=BACKGROUND_COLOR)
-        form.pack(fill="both", expand=True, padx=14, pady=14)
+        form = ctk.CTkScrollableFrame(
+            form_panel,
+            fg_color=BACKGROUND_COLOR,
+            corner_radius=10,
+        )
+        form.pack(fill="both", expand=True)
         form.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(
@@ -753,7 +755,7 @@ class App(ctk.CTk):
                 error_label.configure(text=str(error))
                 return
 
-            window.destroy()
+            self._close_side_panel()
             self.load_orders()
             if zone_id is None:
                 zone_reason = address_lookup_error or {
@@ -778,7 +780,7 @@ class App(ctk.CTk):
             fg_color="#E8ECE8",
             hover_color="#DCE3DC",
             text_color=TEXT_COLOR,
-            command=window.destroy,
+            command=self._close_side_panel,
         ).pack(side="right", padx=(8, 0))
         ctk.CTkButton(
             buttons,
@@ -1001,6 +1003,77 @@ class App(ctk.CTk):
         if label.cget("wraplength") != wraplength:
             label.configure(wraplength=wraplength)
 
+    def _open_side_panel(self, title: str, width: int):
+        if self._side_panel is not None and self._side_panel.winfo_exists():
+            self._side_panel.destroy()
+
+        panel_width = min(width, max(self.winfo_width() - 270, 320))
+        panel_height = max(self.winfo_height() - 48, 320)
+        panel = ctk.CTkFrame(
+            self,
+            width=panel_width,
+            height=panel_height,
+            fg_color=SURFACE_COLOR,
+            corner_radius=14,
+            border_width=1,
+            border_color=BORDER_COLOR,
+        )
+        self._side_panel = panel
+        self._side_panel_width = width
+        panel.place(
+            relx=1,
+            x=-24,
+            y=24,
+            anchor="ne",
+            relwidth=panel_width / max(self.winfo_width(), 1),
+            relheight=0.93,
+        )
+        panel.lift()
+
+        header = ctk.CTkFrame(panel, fg_color="transparent")
+        header.pack(fill="x", padx=18, pady=(14, 8))
+        ctk.CTkLabel(
+            header,
+            text=title,
+            font=ctk.CTkFont(size=20, weight="bold"),
+            text_color=TEXT_COLOR,
+            anchor="w",
+        ).pack(side="left", fill="x", expand=True)
+        ctk.CTkButton(
+            header,
+            text="×",
+            width=34,
+            height=34,
+            fg_color="transparent",
+            hover_color="#EEF3EE",
+            text_color=TEXT_COLOR,
+            font=ctk.CTkFont(size=20),
+            command=self._close_side_panel,
+        ).pack(side="right")
+
+        content = ctk.CTkFrame(panel, fg_color="transparent")
+        content.pack(fill="both", expand=True, padx=14, pady=(0, 14))
+        return content
+
+    def _close_side_panel(self):
+        if self._side_panel is not None and self._side_panel.winfo_exists():
+            self._side_panel.destroy()
+        self._side_panel = None
+
+    def _resize_side_panel(self, event):
+        if (
+            event.widget is self
+            and self._side_panel is not None
+            and self._side_panel.winfo_exists()
+        ):
+            panel_width = min(
+                self._side_panel_width,
+                max(event.width - 270, 320),
+            )
+            self._side_panel.place_configure(
+                relwidth=panel_width / max(event.width, 1),
+            )
+
     def _show_orders_state(self, message, text_color=MUTED_COLOR):
         self._clear_order_rows()
         self.orders_scrollable_frame.place_forget()
@@ -1086,23 +1159,15 @@ class App(ctk.CTk):
             )
             return
 
-        window = ctk.CTkToplevel(self)
-        window.title(f"Заказ {order['order_no']}")
-        window.geometry("600x760")
-        window.minsize(520, 600)
-        window.transient(self)
-        window.grab_set()
+        details_panel = self._open_side_panel(f"Заказ {order['order_no']}", 500)
 
-        details = ctk.CTkScrollableFrame(window, fg_color=BACKGROUND_COLOR)
-        details.pack(fill="both", expand=True, padx=14, pady=14)
+        details = ctk.CTkScrollableFrame(
+            details_panel,
+            fg_color=BACKGROUND_COLOR,
+            corner_radius=10,
+        )
+        details.pack(fill="both", expand=True)
         details.grid_columnconfigure(0, weight=1)
-
-        ctk.CTkLabel(
-            details,
-            text=f"Заказ {order['order_no']}",
-            font=ctk.CTkFont(size=22, weight="bold"),
-            text_color=TEXT_COLOR,
-        ).grid(row=0, column=0, sticky="w", pady=(4, 12))
 
         def add_detail(row, title, value):
             ctk.CTkLabel(
@@ -1117,7 +1182,7 @@ class App(ctk.CTk):
                 font=ctk.CTkFont(size=13),
                 text_color=TEXT_COLOR,
                 justify="left",
-                wraplength=520,
+                wraplength=440,
             ).grid(row=row + 1, column=0, sticky="ew", pady=(0, 3))
 
         full_address = (
@@ -1238,10 +1303,10 @@ class App(ctk.CTk):
                 messagebox.showerror(
                     "Не удалось сохранить заказ",
                     str(error),
-                    parent=window,
+                    parent=self,
                 )
                 return
-            window.destroy()
+            self._close_side_panel()
             self.load_orders()
 
         ctk.CTkButton(
@@ -1252,7 +1317,7 @@ class App(ctk.CTk):
             fg_color="#E8ECE8",
             hover_color="#DCE3DC",
             text_color=TEXT_COLOR,
-            command=window.destroy,
+            command=self._close_side_panel,
         ).pack(side="right", padx=(8, 0))
         ctk.CTkButton(
             buttons,
@@ -1392,21 +1457,13 @@ class App(ctk.CTk):
             )
             return
 
-        window = ctk.CTkToplevel(self)
-        window.title(f"История доставок — {courier_name}")
-        window.geometry("1180x720")
-        window.minsize(860, 560)
-        window.transient(self)
+        panel_content = self._open_side_panel(
+            f"История доставок — {courier_name}",
+            930,
+        )
 
-        ctk.CTkLabel(
-            window,
-            text=f"История доставок — {courier_name}",
-            font=ctk.CTkFont(size=24, weight="bold"),
-            text_color=TEXT_COLOR,
-        ).pack(anchor="w", padx=18, pady=(16, 8))
-
-        controls = ctk.CTkFrame(window, fg_color="transparent")
-        controls.pack(fill="x", padx=18, pady=(0, 8))
+        controls = ctk.CTkFrame(panel_content, fg_color="transparent")
+        controls.pack(fill="x", pady=(0, 8))
         ctk.CTkLabel(
             controls,
             text="Дата доставки",
@@ -1436,8 +1493,12 @@ class App(ctk.CTk):
         )
         feedback_label.pack(side="left", padx=8)
 
-        table_header = ctk.CTkFrame(window, fg_color="#EEF3EE", corner_radius=8)
-        table_header.pack(fill="x", padx=18, pady=(4, 4))
+        table_header = ctk.CTkFrame(
+            panel_content,
+            fg_color="#EEF3EE",
+            corner_radius=8,
+        )
+        table_header.pack(fill="x", pady=(4, 4))
         column_weights = (1.0, 1.4, 2.4, 1.0, 1.2)
         titles = ("Номер заказа", "Получатель", "Адрес", "Сумма, ₽", "Оплата")
         for column, weight in enumerate(column_weights):
@@ -1456,13 +1517,13 @@ class App(ctk.CTk):
             ).grid(row=0, column=column, sticky="ew", padx=10, pady=10)
 
         history_frame = ctk.CTkScrollableFrame(
-            window,
+            panel_content,
             fg_color=SURFACE_COLOR,
             corner_radius=12,
             border_width=1,
             border_color=BORDER_COLOR,
         )
-        history_frame.pack(fill="both", expand=True, padx=18, pady=(0, 14))
+        history_frame.pack(fill="both", expand=True, pady=(0, 8))
 
         def money_text(amount_kopecks: int) -> str:
             return f"{self._format_payment_amount(amount_kopecks)} ₽"
@@ -1607,7 +1668,7 @@ class App(ctk.CTk):
                 messagebox.showerror(
                     "Не удалось загрузить историю",
                     str(error),
-                    parent=window,
+                    parent=self,
                 )
                 return
 
@@ -1637,7 +1698,7 @@ class App(ctk.CTk):
                 messagebox.showerror(
                     "Не удалось сохранить суммы",
                     str(error),
-                    parent=window,
+                    parent=self,
                 )
                 return False
 
@@ -1669,7 +1730,7 @@ class App(ctk.CTk):
                 messagebox.showerror(
                     "Не удалось изменить оплату",
                     str(error),
-                    parent=window,
+                    parent=self,
                 )
                 return
             load_history(selected_day)
@@ -1684,7 +1745,7 @@ class App(ctk.CTk):
                 messagebox.showerror(
                     "Некорректная дата",
                     "Введите дату в формате ДД.ММ.ГГГГ.",
-                    parent=window,
+                    parent=self,
                 )
                 return
             if not save_amounts(reload=False):
@@ -1704,15 +1765,14 @@ class App(ctk.CTk):
         date_entry.bind("<Return>", show_selected_date)
 
         ctk.CTkButton(
-            controls,
+            panel_content,
             text="Сохранить суммы",
-            width=150,
-            height=36,
+            height=38,
             fg_color=PRIMARY_COLOR,
             hover_color=PRIMARY_HOVER_COLOR,
             text_color=SURFACE_COLOR,
             command=save_amounts,
-        ).pack(side="right")
+        ).pack(fill="x", pady=(0, 2))
 
         load_history(selected_day)
 
