@@ -34,7 +34,7 @@
   <div class="layout">
     <aside>
       <h1>Зоны доставок</h1>
-      <p>Введите название зоны и нажмите «Нарисовать». Отметьте на карте точки границы, затем завершите контур двойным щелчком. Перетаскивайте вершины или удаляйте зоны инструментами на карте.</p>
+      <p>Введите название зоны и нажмите «Нарисовать». Отметьте на карте точки границы, затем завершите контур двойным щелчком. Чтобы изменить существующую зону, нажмите кнопку редактирования на карте и перетащите её вершины. Название можно изменить в списке.</p>
       <input id="zone-name" maxlength="80" placeholder="Например, Центр">
       <button id="draw-zone">Нарисовать зону</button>
       <button id="save-zones">Сохранить зоны</button>
@@ -47,6 +47,7 @@
   <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
   <script>
     const token = new URLSearchParams(location.search).get("token");
+    const requestedZoneId = new URLSearchParams(location.search).get("edit_zone");
     const apiUrl = `/api/zones?token=${encodeURIComponent(token || "")}`;
     const status = document.getElementById("status");
     const zoneNameInput = document.getElementById("zone-name");
@@ -116,8 +117,26 @@
       if (!response.ok) throw new Error(result.error || "Не удалось загрузить зоны.");
       result.zones.forEach(addZone);
       renderZoneList();
-      if (zones.getLayers().length) map.fitBounds(zones.getBounds(), { padding: [20, 20] });
-      setStatus(`Зон загружено: ${zones.getLayers().length}`);
+      const requestedZone = zones.getLayers().find(
+        layer => String(layer.feature.properties.id) === requestedZoneId
+      );
+      if (requestedZone) {
+        requestedZone.setStyle({
+          color: "#d08735",
+          fillColor: "#e9ac60",
+          fillOpacity: 0.4
+        });
+        requestedZone.bringToFront();
+        map.fitBounds(requestedZone.getBounds(), { padding: [30, 30] });
+        setStatus(
+          `Выбрана зона «${requestedZone.feature.properties.name}». Измените контур инструментом редактирования и нажмите «Сохранить зоны».`
+        );
+      } else {
+        if (zones.getLayers().length) {
+          map.fitBounds(zones.getBounds(), { padding: [20, 20] });
+        }
+        setStatus(`Зон загружено: ${zones.getLayers().length}`);
+      }
     }
 
     document.getElementById("draw-zone").addEventListener("click", () => {

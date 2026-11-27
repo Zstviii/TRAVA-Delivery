@@ -32,6 +32,11 @@ class ZoneMapServer:
             f"?token={self.token}"
         )
 
+    def url_for_zone(self, zone_id: int) -> str:
+        if isinstance(zone_id, bool) or not isinstance(zone_id, int) or zone_id <= 0:
+            raise ValueError("Некорректный ID зоны.")
+        return f"{self.url}&edit_zone={zone_id}"
+
     def close(self) -> None:
         self.httpd.shutdown()
         self.httpd.server_close()

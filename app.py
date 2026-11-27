@@ -976,13 +976,15 @@ class App(ctk.CTk):
 
         zone_header = ctk.CTkFrame(page, fg_color="#EEF3EE", corner_radius=8)
         zone_header.pack(fill="x", pady=(0, 4))
-        for column, weight in enumerate((1.1, 2.4, 1.0)):
+        for column, weight in enumerate((1.1, 2.4, 2.0)):
             zone_header.grid_columnconfigure(
                 column,
                 weight=int(weight * 10),
                 uniform="zone_assignment_columns",
             )
-        for column, title in enumerate(("Зона", "Назначенные курьеры", "")):
+        for column, title in enumerate(
+            ("Зона", "Назначенные курьеры", "Действия")
+        ):
             ctk.CTkLabel(
                 zone_header,
                 text=title,
@@ -1040,7 +1042,7 @@ class App(ctk.CTk):
                 corner_radius=8,
             )
             row.pack(fill="x", padx=4, pady=3)
-            for column, weight in enumerate((1.1, 2.4, 1.0)):
+            for column, weight in enumerate((1.1, 2.4, 2.0)):
                 row.grid_columnconfigure(
                     column,
                     weight=int(weight * 10),
@@ -1065,17 +1067,38 @@ class App(ctk.CTk):
                     wraplength=480,
                 ).grid(row=0, column=column, sticky="ew", padx=10, pady=10)
 
+            actions = ctk.CTkFrame(row, fg_color="transparent")
+            actions.grid(row=0, column=2, sticky="ew", padx=8, pady=6)
+            for column in range(2):
+                actions.grid_columnconfigure(
+                    column,
+                    weight=1,
+                    uniform="zone_actions",
+                )
+            zone_id = int(zone["id"])
+            zone_name = str(zone["name"])
             ctk.CTkButton(
-                row,
-                text="Назначить",
+                actions,
+                text="Изменить",
+                height=32,
+                fg_color="#E8ECE8",
+                hover_color="#DCE3DC",
+                text_color=TEXT_COLOR,
+                command=lambda selected_zone_id=zone_id: self._open_zone_map(
+                    selected_zone_id
+                ),
+            ).grid(row=0, column=0, sticky="ew", padx=(0, 4))
+            ctk.CTkButton(
+                actions,
+                text="Курьеры",
                 height=32,
                 fg_color=PRIMARY_COLOR,
                 hover_color=PRIMARY_HOVER_COLOR,
                 text_color=SURFACE_COLOR,
-                command=lambda zone_id=int(zone["id"]), name=str(zone["name"]): (
-                    self._open_zone_courier_assignment(zone_id, name)
+                command=lambda selected_zone_id=zone_id, name=zone_name: (
+                    self._open_zone_courier_assignment(selected_zone_id, name)
                 ),
-            ).grid(row=0, column=2, sticky="ew", padx=8, pady=6)
+            ).grid(row=0, column=1, sticky="ew", padx=(4, 0))
 
     def _open_zone_courier_assignment(self, zone_id: int, zone_name: str):
         panel = self._open_side_panel(f"Курьеры зоны — {zone_name}", 520)
@@ -1148,7 +1171,7 @@ class App(ctk.CTk):
             command=save_assignment,
         ).pack(fill="x")
 
-    def _open_zone_map(self):
+    def _open_zone_map(self, zone_id: int | None = None):
         if self.order_store is None:
             messagebox.showerror(
                 "База данных недоступна",
@@ -1166,11 +1189,16 @@ class App(ctk.CTk):
                 parent=self,
             )
             return
-        if not webbrowser.open(self.zone_map_server.url):
+        map_url = (
+            self.zone_map_server.url_for_zone(zone_id)
+            if zone_id is not None
+            else self.zone_map_server.url
+        )
+        if not webbrowser.open(map_url):
             messagebox.showerror(
                 "Не удалось открыть карту зон",
                 "Не удалось открыть браузер. Откройте ссылку вручную:\n"
-                f"{self.zone_map_server.url}",
+                f"{map_url}",
                 parent=self,
             )
 
