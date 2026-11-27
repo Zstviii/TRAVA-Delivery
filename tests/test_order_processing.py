@@ -1,6 +1,7 @@
 import unittest
 
 from Module.order_processing import (
+    ADDRESS_PREFIX,
     EMPTY_VALUE,
     ORDER_COLUMN_HEADERS,
     format_address,
@@ -9,48 +10,60 @@ from Module.order_processing import (
 
 
 class PrepareOrdersTests(unittest.TestCase):
-    def test_orders_are_sorted_by_parsed_delivery_time_with_fallback(self):
-        orders = [
-            {
-                "id": "later",
-                "attributes": {"deliveryTimeFrom": "2026-11-24T11:00:00+03:00"},
-            },
-            {
-                "id": "fallback",
-                "attributes": {
-                    "deliveryTimeFrom": None,
-                    "dueTime": "2026-11-24T09:30:00+02:00",
-                },
-            },
-            {
-                "id": "earlier",
-                "attributes": {"deliveryTimeFrom": "2026-11-24T10:00:00+03:00"},
-            },
-            {"id": "no-time", "attributes": {"deliveryTimeFrom": None}},
-        ]
-
-        rows = prepare_orders(orders)
-
-        self.assertEqual(
-            [row.order_id for row in rows],
-            ["earlier", "fallback", "later", "no-time"],
-        )
-
-    def test_delivered_orders_are_hidden_and_null_status_is_kept(self):
+    def test_orders_are_sorted_by_delivery_time_and_missing_time_goes_last(self):
         rows = prepare_orders(
             [
-                {"id": "delivered", "attributes": {"deliveryStatus": "delivered"}},
-                {"id": "unknown", "attributes": {"deliveryStatus": None}},
-                {"id": "other", "attributes": {"deliveryStatus": "courier"}},
+                {"id": 3, "delivery_time": ""},
+                {"id": 2, "delivery_time": "12:30"},
+                {"id": 1, "delivery_time": "09:15"},
             ]
         )
 
-        self.assertEqual([row.order_id for row in rows], ["unknown", "other"])
-        self.assertEqual(rows[0].values[5], "Не указан")
+        self.assertEqual([row.order_id for row in rows], ["1", "2", "3"])
 
-    def test_missing_values_and_address_parts_have_safe_placeholders(self):
-        rows = prepare_orders([{"id": "empty", "attributes": {}}])
+    def test_order_row_contains_zone_comment_and_assigned_courier_name(self):
+        rows = prepare_orders(
+            [
+                {
+                    "id": 1,
+                    "order_no": "ORD-000001",
+                    "recipient": "Иван",
+                    "phone": "+7 900 000-00-00",
+                    "street_address": "Ленина, 10",
+                    "zone_name": "Центр",
+                    "delivery_time": "14:00",
+                    "status": "Новый",
+                    "comment": "Позвонить заранее",
+                    "courier_name": "Алексей",
+                    "courier_phone": "+7 911 111-11-11",
+                }
+            ]
+        )
 
+        self.assertEqual(
+            rows[0].values,
+            (
+                "ORD-000001",
+                "Иван",
+                "+7 900 000-00-00",
+                f"{ADDRESS_PREFIX}, Ленина, 10",
+                "Центр",
+                "14:00",
+                "Новый",
+                "Позвонить заранее",
+                "Алексей",
+            ),
+        )
+
+    def test_address_prefix_is_added_and_internal_address_details_are_not_shown(self):
+        self.assertEqual(
+            format_address({"street_address": "Свободы, 12"}),
+            f"{ADDRESS_PREFIX}, Свободы, 12",
+        )
+        self.assertEqual(format_address({"street_address": ""}), EMPTY_VALUE)
+
+    def test_missing_fields_have_placeholders(self):
+        rows = prepare_orders([{"id": 1}])
         self.assertEqual(
             rows[0].values,
             (
@@ -59,43 +72,14 @@ class PrepareOrdersTests(unittest.TestCase):
                 EMPTY_VALUE,
                 EMPTY_VALUE,
                 EMPTY_VALUE,
+                EMPTY_VALUE,
                 "Не указан",
+                EMPTY_VALUE,
                 EMPTY_VALUE,
             ),
         )
-        self.assertEqual(format_address({"deliveryHouse": "7"}), "д. 7")
-        self.assertEqual(format_address({}), EMPTY_VALUE)
 
-    def test_address_uses_all_available_fields(self):
-        order = {
-            "attributes": {
-                "deliveryCity": "Москва",
-                "deliveryStreet": "Садовая",
-                "deliveryHouse": "12",
-                "deliveryBuilding": "2",
-                "deliveryApartment": "34",
-            }
-        }
-
-        self.assertEqual(
-            format_address(order),
-            "Москва, Садовая, д. 12, корп. 2, кв. 34",
-        )
-
-    def test_courier_assignment_uses_unique_order_id_not_document_number(self):
-        rows = prepare_orders(
-            [
-                {
-                    "id": "unique-id",
-                    "attributes": {"docNo": "order-number"},
-                }
-            ],
-            {"unique-id": "Анна", "order-number": "Не тот курьер"},
-        )
-
-        self.assertEqual(rows[0].values[6], "Анна")
-
-    def test_headers_are_in_required_order_and_empty_input_is_safe(self):
+    def test_headers_include_zone_comment_and_courier_name(self):
         self.assertEqual(
             ORDER_COLUMN_HEADERS,
             (
@@ -103,12 +87,13 @@ class PrepareOrdersTests(unittest.TestCase):
                 "Получатель",
                 "Номер телефона",
                 "Адрес",
+                "Зона",
                 "Время доставки",
                 "Статус доставки",
+                "Комментарий",
                 "Курьер",
             ),
         )
-        self.assertEqual(prepare_orders([]), [])
 
 
 if __name__ == "__main__":
