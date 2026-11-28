@@ -4,6 +4,7 @@ from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import re
+import os
 
 import requests
 from dotenv import load_dotenv
@@ -42,6 +43,8 @@ class TelegramBot:
         self.on_courier_linked = on_courier_linked
         self.on_order_updated = on_order_updated
         self.pending_link_chats: dict[str, datetime] = {}
+        self.mini_app_url = os.getenv('MINI_APP_URL', '').strip()
+        self.florist_ids = {value.strip() for value in os.getenv('FLORIST_TELEGRAM_IDS', '').split(',') if value.strip()}
 
     def _api_call(self, method: str, payload: dict[str, object] | None = None):
         response = self.session.post(
@@ -154,13 +157,21 @@ class TelegramBot:
                 for key, expiry in self.pending_link_chats.items()
                 if expiry > now
             }
-            self.pending_link_chats[str(chat_id)] = now + timedelta(minutes=15)
-            self._send_message(
-                chat_id,
-                "Введите 6-значный код подключения, который выдал администратор. "
-                "Если аккаунт уже подключён, нажмите «Заказы».",
-                show_orders_button=True,
-            )
+            is_florist = str(user_id) in self.florist_ids
+            is_courier = self.order_store.get_courier_by_telegram_chat_id(chat_id) is not None
+            if is_florist or is_courier:
+                self._send_message(
+                    chat_id,
+                    "Добро пожаловать в TRAVA! Откройте мини-приложение кнопкой ниже.",
+                    show_mini_app_button=True,
+                )
+            else:
+                self.pending_link_chats[str(chat_id)] = now + timedelta(minutes=15)
+                self._send_message(
+                    chat_id,
+                    "Введите 6-значный код подключения, который выдал администратор.",
+                    show_orders_button=True,
+                )
             return
 
         if command == "/orders" or text.strip().casefold() == ORDERS_BUTTON.casefold():
@@ -220,9 +231,8 @@ class TelegramBot:
                 self.on_courier_linked()
             self._send_message(
                 chat_id,
-                "Аккаунт курьера подключён. Нажмите «Заказы», чтобы увидеть "
-                "назначенные вам актуальные заказы.",
-                show_orders_button=True,
+                "Аккаунт курьера подключён. Теперь откройте мини-приложение TRAVA.",
+                show_mini_app_button=True,
             )
             return
 
@@ -410,9 +420,18 @@ class TelegramBot:
         text: str,
         show_orders_button: bool = False,
         reply_markup: dict[str, object] | None = None,
+        show_mini_app_button: bool = False,
     ) -> None:
         payload: dict[str, object] = {"chat_id": chat_id, "text": text}
-        if show_orders_button:
+        if show_mini_app_button and self.mini_app_url:
+            payload["reply_markup"] = {
+                "keyboard": [[{
+                    "text": "Открыть TRAVA",
+                    "web_app": {"url": self.mini_app_url},
+                }]],
+                "resize_keyboard": True,
+            }
+        elif show_orders_button:
             payload["reply_markup"] = {
                 "keyboard": [[{"text": ORDERS_BUTTON}]],
                 "resize_keyboard": True,
