@@ -82,6 +82,156 @@ class OrderStoreTests(unittest.TestCase):
         self.assertIsNone(unassigned["courier_phone"])
         self.assertEqual(unassigned["status"], "Новый")
 
+    def test_archiving_courier_preserves_history_and_zone_links(self):
+        zone = self.store.replace_delivery_zones(
+            [
+                {
+                    "name": "Центр",
+                    "geometry": {
+                        "type": "Polygon",
+                        "coordinates": [
+                            [
+                                [49.0, 58.0],
+                                [50.0, 58.0],
+                                [50.0, 59.0],
+                                [49.0, 59.0],
+                                [49.0, 58.0],
+                            ]
+                        ],
+                    },
+                }
+            ]
+        )[0]
+        courier_id = self.store.add_courier("Курьер", "+7 911 111-11-11")
+        self.store.set_zone_couriers(zone["id"], [courier_id])
+        order_id = self.create_order()
+        self.store.update_order_assignment(
+            order_id,
+            "+7 911 111-11-11",
+            zone["id"],
+        )
+        code = self.store.create_telegram_link_code(courier_id)
+        self.store.link_telegram_account(code, 12345, 67890, "courier")
+
+        self.store.archive_courier(courier_id)
+
+        self.assertEqual(self.store.list_couriers(), [])
+        archived = self.store.list_couriers(include_archived=True)[0]
+        self.assertEqual(archived["is_active"], 0)
+        self.assertEqual(archived["zone_ids"], [zone["id"]])
+        self.assertEqual(
+            self.store.get_order(order_id)["courier_name"],
+            "Курьер",
+        )
+        self.assertEqual(
+            self.store.get_courier_by_telegram_chat_id(12345)["id"],
+            courier_id,
+        )
+        self.assertEqual(
+            self.store.list_delivery_zones_with_couriers()[0]["couriers"],
+            [],
+        )
+        with self.assertRaisesRegex(LookupError, "Активный курьер"):
+            self.store.create_telegram_link_code(courier_id)
+        with self.assertRaisesRegex(ValueError, "архив"):
+            self.store.set_zone_couriers(zone["id"], [courier_id])
+
+        self.store.restore_courier(courier_id)
+
+        restored = self.store.list_couriers()[0]
+        self.assertEqual(restored["is_active"], 1)
+        self.assertEqual(
+            self.store.list_delivery_zones_with_couriers()[0]["couriers"][0]["id"],
+            courier_id,
+        )
+
+    def test_archived_courier_cannot_be_assigned_to_new_orders(self):
+        courier_id = self.store.add_courier("Курьер", "+7 911 111-11-11")
+        self.store.archive_courier(courier_id)
+        order_id = self.create_order()
+
+        with self.assertRaisesRegex(ValueError, "архива"):
+            self.store.update_order_assignment(
+                order_id,
+                "+7 911 111-11-11",
+                None,
+            )
+
+    def test_permanent_courier_deletion_unassigns_active_orders_and_keeps_history(self):
+        zone = self.store.replace_delivery_zones(
+            [
+                {
+                    "name": "Центр",
+                    "geometry": {
+                        "type": "Polygon",
+                        "coordinates": [
+                            [
+                                [49.0, 58.0],
+                                [50.0, 58.0],
+                                [50.0, 59.0],
+                                [49.0, 59.0],
+                            ]
+                        ],
+                    },
+                }
+            ]
+        )[0]
+        courier_id = self.store.add_courier("Курьер", "+7 911 111-11-11")
+        self.store.set_zone_couriers(zone["id"], [courier_id])
+        code = self.store.create_telegram_link_code(courier_id)
+        self.store.link_telegram_account(code, 12345, 67890, "courier")
+
+        active_order_id = self.create_order()
+        delivered_order_id = self.create_order(
+            recipient="Мария",
+            order_date=date.today(),
+        )
+        for order_id in (active_order_id, delivered_order_id):
+            self.store.update_order_assignment(
+                order_id,
+                "+7 911 111-11-11",
+                zone["id"],
+            )
+        self.store.set_courier_order_status(
+            delivered_order_id,
+            12345,
+            67890,
+            "Доставляется",
+        )
+        self.store.set_courier_order_status(
+            delivered_order_id,
+            12345,
+            67890,
+            "Доставлен",
+        )
+        self.store.save_courier_delivery_amounts(
+            courier_id,
+            date.today(),
+            {delivered_order_id: 12500},
+        )
+        self.store.set_courier_delivery_paid(
+            delivered_order_id,
+            courier_id,
+            True,
+        )
+
+        self.store.delete_courier(courier_id)
+
+        self.assertEqual(self.store.list_couriers(include_archived=True), [])
+        self.assertIsNone(self.store.get_courier_by_telegram_chat_id(12345))
+        self.assertEqual(
+            self.store.list_delivery_zones_with_couriers()[0]["couriers"],
+            [],
+        )
+        active_order = self.store.get_order(active_order_id)
+        self.assertIsNone(active_order["courier_id"])
+        self.assertEqual(active_order["status"], "Новый")
+        delivered_order = self.store.get_order(delivered_order_id)
+        self.assertIsNone(delivered_order["courier_id"])
+        self.assertEqual(delivered_order["status"], "Доставлен")
+        self.assertEqual(delivered_order["delivery_fee_kopecks"], 12500)
+        self.assertEqual(delivered_order["is_paid"], 1)
+
     def test_delivery_zone_matching_and_manual_order_assignment(self):
         zone = self.store.replace_delivery_zones(
             [
@@ -417,6 +567,10 @@ class OrderStoreTests(unittest.TestCase):
         self.assertEqual(
             migrated_store.get_courier_by_telegram_chat_id(222)["name"],
             "Старый курьер",
+        )
+        self.assertEqual(
+            migrated_store.list_couriers()[0]["is_active"],
+            1,
         )
 
     def test_existing_orders_are_migrated_without_losing_assignments(self):

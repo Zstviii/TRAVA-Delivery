@@ -5,6 +5,7 @@ import threading
 import webbrowser
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
+from functools import partial
 from tkinter import messagebox
 
 import customtkinter as ctk
@@ -889,7 +890,7 @@ class App(ctk.CTk):
 
         couriers_header = ctk.CTkFrame(page, fg_color="#EEF3EE", corner_radius=8)
         couriers_header.pack(fill="x", pady=(0, 4))
-        courier_column_weights = (2.0, 2.0, 2.2, 1.4)
+        courier_column_weights = (2.0, 2.0, 2.2, 1.4, 1.2, 1.5)
         for column, weight in enumerate(courier_column_weights):
             couriers_header.grid_columnconfigure(
                 column,
@@ -897,7 +898,14 @@ class App(ctk.CTk):
                 uniform="courier_columns",
             )
         for column, title in enumerate(
-            ("Курьер", "Номер телефона", "Telegram-аккаунт", "Подключение")
+            (
+                "Курьер",
+                "Номер телефона",
+                "Telegram-аккаунт",
+                "Подключение",
+                "Действия",
+                "Удаление",
+            )
         ):
             ctk.CTkLabel(
                 couriers_header,
@@ -1008,7 +1016,7 @@ class App(ctk.CTk):
         if self.order_store is None:
             return
         try:
-            self.couriers = self.order_store.list_couriers()
+            self.couriers = self.order_store.list_couriers(include_archived=True)
             zones = self.order_store.list_delivery_zones_with_couriers()
         except sqlite3.Error as error:
             self.database_error = error
@@ -1111,10 +1119,13 @@ class App(ctk.CTk):
             wraplength=460,
         ).pack(anchor="w", pady=(0, 8))
 
-        if not self.couriers:
+        active_couriers = [
+            courier for courier in self.couriers if courier.get("is_active", 1)
+        ]
+        if not active_couriers:
             ctk.CTkLabel(
                 panel,
-                text="Сначала добавьте курьера во вкладке «Курьеры».",
+                text="Нет активных курьеров для назначения.",
                 font=ctk.CTkFont(size=14),
                 text_color=TEXT_COLOR,
             ).pack(anchor="w", pady=12)
@@ -1127,7 +1138,7 @@ class App(ctk.CTk):
         )
         courier_frame.pack(fill="both", expand=True, pady=(0, 10))
         courier_checks: dict[int, ctk.BooleanVar] = {}
-        for courier in self.couriers:
+        for courier in active_couriers:
             courier_id = int(courier["id"])
             selected = ctk.BooleanVar(value=zone_id in courier["zone_ids"])
             courier_checks[courier_id] = selected
@@ -1233,7 +1244,7 @@ class App(ctk.CTk):
 
         try:
             self.orders = self.order_store.list_orders(selected_day)
-            self.couriers = self.order_store.list_couriers()
+            self.couriers = self.order_store.list_couriers(include_archived=True)
         except (OSError, sqlite3.Error) as error:
             self.database_error = error
             self._set_database_status(error)
@@ -1439,10 +1450,17 @@ class App(ctk.CTk):
         except (TypeError, ValueError):
             zone_id = None
 
-        couriers = self._couriers_for_zone_first(
-            self.couriers if couriers is None else couriers,
-            zone_id,
-        )
+        current_phone = order.get("courier_phone")
+        couriers = [
+            courier
+            for courier in (self.couriers if couriers is None else couriers)
+            if courier.get("is_active", 1)
+            or (
+                current_phone is not None
+                and str(courier["phone"]) == str(current_phone)
+            )
+        ]
+        couriers = self._couriers_for_zone_first(couriers, zone_id)
         name_counts: dict[str, int] = {}
         for courier in couriers:
             name = str(courier["name"])
@@ -1460,7 +1478,9 @@ class App(ctk.CTk):
                 if name_counts[name] > 1
                 else name
             )
-            if is_zone_courier:
+            if not courier.get("is_active", 1):
+                label += " · архив"
+            elif is_zone_courier:
                 label += " · зона"
             choices[label] = str(courier["phone"])
         choices["— Не назначен —"] = None
@@ -1518,7 +1538,7 @@ class App(ctk.CTk):
         try:
             order = self.order_store.get_order(int(order_id))
             zones = self.order_store.list_delivery_zones()
-            couriers = self.order_store.list_couriers()
+            couriers = self.order_store.list_couriers(include_archived=True)
         except sqlite3.Error as error:
             self.database_error = error
             self._set_database_status(error)
@@ -1631,7 +1651,10 @@ class App(ctk.CTk):
 
         current_zone_id = order["zone_id"]
         courier_values, courier_options = self._courier_choices_for_order(
-            {"zone_id": current_zone_id},
+            {
+                "zone_id": current_zone_id,
+                "courier_phone": order["courier_phone"],
+            },
             couriers,
         )
         courier_labels = {
@@ -1677,7 +1700,10 @@ class App(ctk.CTk):
         def update_courier_choices(zone_label):
             previous_phone = courier_options.get(courier_menu.get())
             values, options = self._courier_choices_for_order(
-                {"zone_id": zone_options[zone_label]},
+                {
+                    "zone_id": zone_options[zone_label],
+                    "courier_phone": order["courier_phone"],
+                },
                 couriers,
             )
             courier_options.clear()
@@ -1776,6 +1802,106 @@ class App(ctk.CTk):
         self.load_orders()
         self._render_couriers_table()
 
+    def _archive_courier(self, courier_id, courier_name):
+        if self.order_store is None:
+            messagebox.showerror(
+                "Не удалось архивировать курьера",
+                f"База данных недоступна: {self.database_error}",
+                parent=self,
+            )
+            return
+        if not messagebox.askyesno(
+            "Архивировать курьера",
+            (
+                f"Архивировать курьера «{courier_name}»?\n\n"
+                "Он исчезнет из новых назначений. Заказы, история и "
+                "привязка Telegram сохранятся."
+            ),
+            parent=self,
+        ):
+            return
+
+        try:
+            self.order_store.archive_courier(courier_id)
+        except (ValueError, LookupError, sqlite3.Error) as error:
+            if isinstance(error, sqlite3.Error):
+                self.database_error = error
+                self._set_database_status(error)
+            messagebox.showerror(
+                "Не удалось архивировать курьера",
+                str(error),
+                parent=self,
+            )
+            return
+
+        self._refresh_courier_views()
+
+    def _restore_courier(self, courier_id):
+        if self.order_store is None:
+            messagebox.showerror(
+                "Не удалось восстановить курьера",
+                f"База данных недоступна: {self.database_error}",
+                parent=self,
+            )
+            return
+
+        try:
+            self.order_store.restore_courier(courier_id)
+        except (ValueError, LookupError, sqlite3.Error) as error:
+            if isinstance(error, sqlite3.Error):
+                self.database_error = error
+                self._set_database_status(error)
+            messagebox.showerror(
+                "Не удалось восстановить курьера",
+                str(error),
+                parent=self,
+            )
+            return
+
+        self._refresh_courier_views()
+
+    def _delete_courier_permanently(self, courier_id, courier_name):
+        if self.order_store is None:
+            messagebox.showerror(
+                "Не удалось удалить курьера",
+                f"База данных недоступна: {self.database_error}",
+                parent=self,
+            )
+            return
+        if not messagebox.askyesno(
+            "Удалить курьера навсегда",
+            (
+                f"Полностью удалить курьера «{courier_name}»?\n\n"
+                "Активные заказы будут сняты с курьера и возвращены "
+                "в статус «Новый». Назначения зон и привязка Telegram "
+                "удалятся. Заказы и суммы выплат останутся в базе, но "
+                "история больше не будет связана с этим курьером.\n\n"
+                "Это действие нельзя отменить."
+            ),
+            parent=self,
+        ):
+            return
+
+        try:
+            self.order_store.delete_courier(courier_id)
+        except (ValueError, LookupError, sqlite3.Error) as error:
+            if isinstance(error, sqlite3.Error):
+                self.database_error = error
+                self._set_database_status(error)
+            messagebox.showerror(
+                "Не удалось удалить курьера",
+                str(error),
+                parent=self,
+            )
+            return
+
+        self._refresh_courier_views()
+
+    def _refresh_courier_views(self):
+        self.load_orders()
+        self._refresh_couriers()
+        self._refresh_zone_assignments()
+
     def _render_couriers_table(self):
         for child in self.couriers_frame.winfo_children():
             child.destroy()
@@ -1797,6 +1923,7 @@ class App(ctk.CTk):
             courier_id = int(courier["id"])
             telegram_username = courier.get("telegram_username")
             telegram_chat_id = courier.get("telegram_chat_id")
+            is_active = bool(courier.get("is_active", 1))
             telegram_label = (
                 f"@{telegram_username}"
                 if telegram_chat_id and telegram_username
@@ -1825,18 +1952,58 @@ class App(ctk.CTk):
                     wraplength=200,
                 ).grid(row=0, column=column, sticky="ew", padx=10, pady=10)
 
+            if is_active:
+                ctk.CTkButton(
+                    row,
+                    text="Переподключить" if telegram_chat_id else "Подключить",
+                    height=32,
+                    corner_radius=8,
+                    fg_color=PRIMARY_COLOR,
+                    hover_color=PRIMARY_HOVER_COLOR,
+                    text_color=SURFACE_COLOR,
+                    command=lambda selected_id=courier_id: (
+                        self._create_telegram_link_code(selected_id)
+                    ),
+                ).grid(row=0, column=3, sticky="ew", padx=8, pady=6)
+            else:
+                ctk.CTkLabel(
+                    row,
+                    text="В архиве",
+                    text_color=MUTED_COLOR,
+                    anchor="w",
+                ).grid(row=0, column=3, sticky="ew", padx=10, pady=10)
+
+            courier_name = str(courier["name"])
+            action_command = (
+                partial(self._archive_courier, courier_id, courier_name)
+                if is_active
+                else partial(self._restore_courier, courier_id)
+            )
             ctk.CTkButton(
                 row,
-                text="Переподключить" if telegram_chat_id else "Подключить",
+                text="В архив" if is_active else "Восстановить",
                 height=32,
                 corner_radius=8,
-                fg_color=PRIMARY_COLOR,
-                hover_color=PRIMARY_HOVER_COLOR,
+                fg_color="#F3E2DF" if is_active else "#E8ECE8",
+                hover_color="#EBD1CC" if is_active else "#DCE3DC",
+                text_color="#8A3B31" if is_active else TEXT_COLOR,
+                command=action_command,
+            ).grid(row=0, column=4, sticky="ew", padx=8, pady=6)
+
+            ctk.CTkButton(
+                row,
+                text="Удалить",
+                height=32,
+                corner_radius=8,
+                fg_color="#B85549",
+                hover_color="#9F443A",
                 text_color=SURFACE_COLOR,
-                command=lambda courier_id=courier_id: (
-                    self._create_telegram_link_code(courier_id)
+                command=partial(
+                    self._delete_courier_permanently,
+                    courier_id,
+                    courier_name,
                 ),
-            ).grid(row=0, column=3, sticky="ew", padx=8, pady=6)
+            ).grid(row=0, column=5, sticky="ew", padx=8, pady=6)
 
     @staticmethod
     def _parse_payment_amount(value: str) -> int | None:
@@ -2285,7 +2452,7 @@ class App(ctk.CTk):
         if self.order_store is None:
             return
         try:
-            self.couriers = self.order_store.list_couriers()
+            self.couriers = self.order_store.list_couriers(include_archived=True)
         except sqlite3.Error as error:
             self.database_error = error
             self._set_database_status(error)

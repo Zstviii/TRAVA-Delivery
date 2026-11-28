@@ -25,6 +25,43 @@ class LocalOrderLoadingTests(unittest.TestCase):
         self.assertEqual(values[-1], "— Не назначен —")
         self.assertEqual(options["Степан · зона"], "+7 900 000-00-02")
 
+    def test_archived_courier_is_only_available_for_its_existing_order(self):
+        app = App.__new__(App)
+        app.couriers = [
+            {
+                "id": 1,
+                "name": "Активный",
+                "phone": "+7 900 000-00-01",
+                "zone_ids": [],
+                "is_active": 1,
+            },
+            {
+                "id": 2,
+                "name": "Архивный",
+                "phone": "+7 900 000-00-02",
+                "zone_ids": [],
+                "is_active": 0,
+            },
+        ]
+
+        new_order_values, _ = App._courier_choices_for_order(
+            app, {"zone_id": None}
+        )
+        existing_order_values, options = App._courier_choices_for_order(
+            app,
+            {
+                "zone_id": None,
+                "courier_phone": "+7 900 000-00-02",
+            },
+        )
+
+        self.assertNotIn("Архивный", " ".join(new_order_values))
+        self.assertIn("Архивный · архив", existing_order_values)
+        self.assertEqual(
+            options["Архивный · архив"],
+            "+7 900 000-00-02",
+        )
+
     def test_payment_amount_parser_supports_decimal_comma_and_currency_precision(self):
         self.assertIsNone(App._parse_payment_amount(""))
         self.assertEqual(App._parse_payment_amount("1 234,5"), 123450)
@@ -53,7 +90,7 @@ class LocalOrderLoadingTests(unittest.TestCase):
             App.load_orders(app)
 
         store.list_orders.assert_called_once_with(selected_day)
-        store.list_couriers.assert_called_once_with()
+        store.list_couriers.assert_called_once_with(include_archived=True)
         self.assertEqual(app.orders, [{"id": 1, "order_no": "ORD-000001"}])
         self.assertEqual(len(render.call_args.args[-1]), 1)
 

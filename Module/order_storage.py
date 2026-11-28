@@ -46,7 +46,8 @@ class OrderStore:
                     telegram_user_id TEXT,
                     telegram_username TEXT,
                     link_code_hash TEXT,
-                    link_code_created_at TEXT
+                    link_code_created_at TEXT,
+                    is_active INTEGER NOT NULL DEFAULT 1
                 );
 
                 CREATE TABLE IF NOT EXISTS delivery_zones (
@@ -131,6 +132,7 @@ class OrderStore:
                 ("telegram_username", "TEXT"),
                 ("link_code_hash", "TEXT"),
                 ("link_code_created_at", "TEXT"),
+                ("is_active", "INTEGER NOT NULL DEFAULT 1"),
             ):
                 if name not in courier_columns:
                     connection.execute(
@@ -315,7 +317,8 @@ class OrderStore:
                        c.id AS courier_id, c.name AS courier_name
                 FROM delivery_zones AS z
                 LEFT JOIN courier_zone_assignments AS a ON a.zone_id = z.id
-                LEFT JOIN couriers AS c ON c.id = a.courier_id
+                LEFT JOIN couriers AS c
+                    ON c.id = a.courier_id AND c.is_active = 1
                 WHERE z.is_active = 1
                 ORDER BY z.name, c.name, c.id
                 """
@@ -466,20 +469,24 @@ class OrderStore:
         except sqlite3.IntegrityError as error:
             raise ValueError("Курьер с таким номером уже существует.") from error
 
-    def list_couriers(self) -> list[dict[str, object]]:
+    def list_couriers(
+        self, include_archived: bool = False
+    ) -> list[dict[str, object]]:
         with self._connection() as connection:
             rows = connection.execute(
                 """
                 SELECT c.id, c.name, c.phone, c.telegram_chat_id,
                        c.telegram_user_id, c.telegram_username,
-                       GROUP_CONCAT(z.id) AS zone_ids
+                       c.is_active, GROUP_CONCAT(z.id) AS zone_ids
                 FROM couriers AS c
                 LEFT JOIN courier_zone_assignments AS a ON a.courier_id = c.id
                 LEFT JOIN delivery_zones AS z
                     ON z.id = a.zone_id AND z.is_active = 1
+                WHERE ? = 1 OR c.is_active = 1
                 GROUP BY c.id
                 ORDER BY c.name, c.id
-                """
+                """,
+                (int(include_archived),),
             ).fetchall()
         couriers = []
         for row in rows:
@@ -491,6 +498,81 @@ class OrderStore:
             )
             couriers.append(courier)
         return couriers
+
+    def archive_courier(self, courier_id: int) -> None:
+        if (
+            isinstance(courier_id, bool)
+            or not isinstance(courier_id, int)
+            or courier_id <= 0
+        ):
+            raise ValueError("Некорректный курьер.")
+        with self._connection() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE couriers
+                SET is_active = 0, link_code_hash = NULL,
+                    link_code_created_at = NULL
+                WHERE id = ? AND is_active = 1
+                """,
+                (courier_id,),
+            )
+            if cursor.rowcount == 0:
+                raise LookupError("Активный курьер не найден.")
+
+    def restore_courier(self, courier_id: int) -> None:
+        if (
+            isinstance(courier_id, bool)
+            or not isinstance(courier_id, int)
+            or courier_id <= 0
+        ):
+            raise ValueError("Некорректный курьер.")
+        with self._connection() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE couriers
+                SET is_active = 1
+                WHERE id = ? AND is_active = 0
+                """,
+                (courier_id,),
+            )
+            if cursor.rowcount == 0:
+                raise LookupError("Архивный курьер не найден.")
+
+    def delete_courier(self, courier_id: int) -> None:
+        if (
+            isinstance(courier_id, bool)
+            or not isinstance(courier_id, int)
+            or courier_id <= 0
+        ):
+            raise ValueError("Некорректный курьер.")
+
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            courier = connection.execute(
+                "SELECT telegram_chat_id FROM couriers WHERE id = ?",
+                (courier_id,),
+            ).fetchone()
+            if courier is None:
+                raise LookupError("Курьер не найден.")
+
+            if courier["telegram_chat_id"] is not None:
+                connection.execute(
+                    "DELETE FROM telegram_link_attempts WHERE chat_id = ?",
+                    (courier["telegram_chat_id"],),
+                )
+            connection.execute(
+                """
+                UPDATE orders
+                SET status = 'Новый'
+                WHERE courier_id = ?
+                  AND status IN ('Взят курьером', 'Доставляется', 'Назначен')
+                """,
+                (courier_id,),
+            )
+            connection.execute(
+                "DELETE FROM couriers WHERE id = ?",
+                (courier_id,),
+            )
 
     def set_zone_couriers(self, zone_id: int, courier_ids: list[int]) -> None:
         if (
@@ -521,13 +603,18 @@ class OrderStore:
 
             for courier_id in normalized_ids:
                 if connection.execute(
-                    "SELECT 1 FROM couriers WHERE id = ?",
+                    "SELECT 1 FROM couriers WHERE id = ? AND is_active = 1",
                     (courier_id,),
                 ).fetchone() is None:
-                    raise ValueError("Выбранный курьер не найден.")
+                    raise ValueError("Выбранный курьер не найден или находится в архиве.")
 
             connection.execute(
-                "DELETE FROM courier_zone_assignments WHERE zone_id = ?",
+                """
+                DELETE FROM courier_zone_assignments
+                WHERE zone_id = ? AND courier_id IN (
+                    SELECT id FROM couriers WHERE is_active = 1
+                )
+                """,
                 (zone_id,),
             )
             connection.executemany(
@@ -541,9 +628,10 @@ class OrderStore:
     def create_telegram_link_code(self, courier_id: int) -> str:
         with self._connection() as connection:
             if connection.execute(
-                "SELECT 1 FROM couriers WHERE id = ?", (courier_id,)
+                "SELECT 1 FROM couriers WHERE id = ? AND is_active = 1",
+                (courier_id,),
             ).fetchone() is None:
-                raise LookupError("Курьер не найден.")
+                raise LookupError("Активный курьер не найден.")
             for _ in range(10):
                 code = f"{secrets.randbelow(1_000_000):06d}"
                 code_hash = hashlib.sha256(code.encode("utf-8")).hexdigest()
@@ -581,7 +669,8 @@ class OrderStore:
                 courier = connection.execute(
                     """
                     SELECT id, link_code_created_at
-                    FROM couriers WHERE link_code_hash = ?
+                    FROM couriers
+                    WHERE link_code_hash = ? AND is_active = 1
                     """,
                     (code_hash,),
                 ).fetchone()
@@ -748,11 +837,13 @@ class OrderStore:
             courier_id = None
             if courier_phone is not None:
                 courier = connection.execute(
-                    "SELECT id FROM couriers WHERE phone = ?",
+                    "SELECT id, is_active FROM couriers WHERE phone = ?",
                     (courier_phone,),
                 ).fetchone()
                 if courier is None:
                     raise ValueError("Курьер с таким номером не найден.")
+                if not courier["is_active"]:
+                    raise ValueError("Нельзя назначить курьера из архива.")
                 courier_id = courier["id"]
 
             if order["courier_id"] == courier_id:
@@ -795,11 +886,16 @@ class OrderStore:
             courier_id = None
             if courier_phone is not None:
                 courier = connection.execute(
-                    "SELECT id FROM couriers WHERE phone = ?",
+                    "SELECT id, is_active FROM couriers WHERE phone = ?",
                     (courier_phone,),
                 ).fetchone()
                 if courier is None:
                     raise ValueError("Курьер с таким номером не найден.")
+                if (
+                    not courier["is_active"]
+                    and order["courier_id"] != courier["id"]
+                ):
+                    raise ValueError("Нельзя назначить курьера из архива.")
                 courier_id = courier["id"]
 
             courier_changed = order["courier_id"] != courier_id
