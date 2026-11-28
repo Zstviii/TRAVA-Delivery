@@ -46,6 +46,22 @@ class TelegramBot:
         self.mini_app_url = os.getenv('MINI_APP_URL', '').strip()
         self.florist_ids = {value.strip() for value in os.getenv('FLORIST_TELEGRAM_IDS', '').split(',') if value.strip()}
 
+    def set_mini_app_url(self, url: str) -> None:
+        """Обновляет адрес Mini App и кнопку меню бота в Telegram."""
+        if not url.startswith("https://"):
+            raise ValueError("Для Telegram Mini App нужен HTTPS-адрес.")
+        self.mini_app_url = url.rstrip("/")
+        self._api_call(
+            "setChatMenuButton",
+            {
+                "menu_button": {
+                    "type": "web_app",
+                    "text": "Открыть TRAVA",
+                    "web_app": {"url": self.mini_app_url},
+                }
+            },
+        )
+
     def _api_call(self, method: str, payload: dict[str, object] | None = None):
         response = self.session.post(
             TELEGRAM_API_URL.format(token=self.token, method=method),
