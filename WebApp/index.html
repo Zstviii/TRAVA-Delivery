@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="theme-color" content="#244d3b">
+<title>TRAVA</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+:root{--green:#244d3b;--primary:#3d654d;--bg:#f4f7f3;--text:#24352b;--muted:#78857c;--line:#e4eae3}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+header{background:var(--green);color:white;padding:22px 18px 20px;border-radius:0 0 22px 22px}
+header small{opacity:.75;letter-spacing:1px}header h1{margin:7px 0 0;font-size:25px}header p{margin:5px 0 0;color:#d7e5d9}
+main{max-width:620px;margin:auto;padding:16px}.tabs{display:flex;gap:8px;margin-bottom:14px}
+.tab,button{border:0;border-radius:12px;padding:12px 15px;font:inherit;cursor:pointer}
+.tab{background:#e7eee7;color:var(--green);flex:1}.tab.active,button.primary{background:var(--primary);color:white}
+.card{background:white;border:1px solid var(--line);border-radius:16px;padding:15px;margin-bottom:12px}
+label{display:block;color:var(--muted);font-size:13px;margin:12px 0 6px}
+input,textarea,select{width:100%;border:1px solid var(--line);border-radius:10px;padding:12px;background:white;color:var(--text);font:inherit}
+textarea{min-height:75px;resize:vertical}.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+button.primary{width:100%;font-weight:600;margin-top:16px;padding:14px}
+button.small{background:#e9f0e9;color:var(--green);margin-top:10px}
+.order-title{font-weight:700;font-size:16px}.line{margin-top:7px;line-height:1.4}.muted{color:var(--muted);font-size:13px}
+.status{display:inline-block;background:#edf3ed;color:var(--green);border-radius:20px;padding:5px 9px;font-size:12px;margin-top:9px}
+.notice{padding:12px;border-radius:12px;background:#fff3dc;color:#79571c;margin-bottom:12px}.notice.success{background:#e7f4e9;color:#285d39}.notice.error{background:#ffeded;color:#a52c2c}
+.hidden{display:none!important}
+</style>
+</head>
+<body>
+<header><small>ЦВЕТОЧНАЯ МАСТЕРСКАЯ</small><h1>TRAVA</h1><p id="welcome">Рабочее пространство</p></header>
+<main>
+<div id="notice" class="notice hidden"></div>
+<nav id="tabs" class="tabs hidden"><button class="tab active" data-tab="orders">Заказы</button><button class="tab hidden" data-tab="new">Новый заказ</button></nav>
+<section id="orders"></section>
+<section id="new" class="hidden">
+<form id="order-form" class="card">
+<strong>Новый заказ</strong>
+<label>Имя получателя *</label><input name="recipient" required maxlength="120" placeholder="Имя получателя">
+<label>Телефон *</label><input name="phone" type="tel" required maxlength="40" placeholder="+7 900 000-00-00">
+<label>Адрес доставки *</label><input name="street_address" required maxlength="250" placeholder="Улица, дом, корпус">
+<div class="grid"><div><label>Этаж</label><input name="floor" maxlength="20"></div><div><label>Квартира</label><input name="apartment" maxlength="20"></div></div>
+<label>Домофон</label><input name="intercom" maxlength="40">
+<div class="grid"><div><label>Дата доставки *</label><input name="order_date" type="date" required></div><div><label>Время доставки</label><input name="delivery_time" type="time"></div></div>
+<label>Зона доставки</label><select name="zone_id"><option value="">Не выбрана</option></select>
+<label>Комментарий</label><textarea name="comment" maxlength="1000" placeholder="Пожелания и информация для курьера"></textarea>
+<button class="primary" type="submit">Создать заказ</button>
+</form>
+</section>
+</main>
+<script>
+(() => {
+ const tg=window.Telegram?.WebApp, initData=tg?.initData||"";
+ const $=id=>document.getElementById(id);
+ const today=()=>new Date(Date.now()-new Date().getTimezoneOffset()*60000).toISOString().slice(0,10);
+ const esc=v=>String(v??"—").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+ function notice(text,type=""){ $("notice").textContent=text; $("notice").className="notice "+type; }
+ async function api(url,options={}){
+   const response=await fetch(url,{...options,headers:{"Content-Type":"application/json","X-Telegram-Init-Data":initData,...(options.headers||{})}});
+   const data=await response.json(); if(!response.ok) throw new Error(data.error||"Ошибка запроса"); return data;
+ }
+ function tab(name){
+   $("orders").classList.toggle("hidden",name!=="orders"); $("new").classList.toggle("hidden",name!=="new");
+   document.querySelectorAll(".tab").forEach(b=>b.classList.toggle("active",b.dataset.tab===name));
+   if(name==="orders") loadOrders();
+ }
+ document.querySelectorAll(".tab").forEach(b=>b.addEventListener("click",()=>tab(b.dataset.tab)));
+ async function loadOrders(){
+   try{
+     const data=await api("/api/orders"), orders=data.orders||[];
+     $("orders").innerHTML=orders.length?orders.map(o=>`<article class="card">
+       <div class="order-title">${esc(o.order_no)} · ${esc(o.recipient)}</div>
+       <div class="line">☎ ${esc(o.phone)}</div><div class="line">⌖ ${esc(o.street_address)}</div>
+       <div class="line">◷ ${esc(o.order_date)} ${esc(o.delivery_time)}</div>
+       <div class="line muted">${esc(o.zone_name||"Зона не указана")}</div><span class="status">${esc(o.status)}</span>
+       ${o.status==="Взят курьером"?`<br><button class="small" data-id="${o.id}" data-status="Доставляется">Начать доставку</button>`:""}
+       ${o.status==="Доставляется"?`<br><button class="small" data-id="${o.id}" data-status="Доставлен">Отметить доставленным</button>`:""}
+     </article>`).join(""):'<div class="card muted">Актуальных заказов нет.</div>';
+     $("orders").querySelectorAll("[data-id]").forEach(button=>button.addEventListener("click",async()=>{
+       try{await api("/api/orders/"+button.dataset.id+"/status",{method:"PATCH",body:JSON.stringify({status:button.dataset.status})});notice("Статус заказа обновлён.","success");loadOrders();}
+       catch(error){notice(error.message,"error");}
+     }));
+   }catch(error){notice(error.message,"error");}
+ }
+ async function init(){
+   if(!tg){notice("Откройте приложение через Telegram-бота TRAVA.","error");return;}
+   tg.ready();tg.expand();
+   try{
+     const me=await api("/api/me"); $("welcome").textContent="Здравствуйте, "+me.name; $("tabs").classList.remove("hidden");
+     if(me.role==="florist"){
+       document.querySelector('[data-tab="new"]').classList.remove("hidden");
+       const zones=await api("/api/zones");
+       zones.zones.forEach(z=>{const option=document.createElement("option");option.value=z.id;option.textContent=z.name;$("order-form").elements.zone_id.append(option);});
+       $("order-form").elements.order_date.value=today();
+     }
+     loadOrders();
+   }catch(error){notice(error.message,"error");}
+ }
+ $("order-form").addEventListener("submit",async event=>{
+   event.preventDefault();const payload=Object.fromEntries(new FormData(event.currentTarget).entries());
+   try{
+     const result=await api("/api/orders",{method:"POST",body:JSON.stringify(payload)});
+     notice("Заказ "+result.order.order_no+" создан и добавлен в TRAVA.","success");
+     event.currentTarget.reset();event.currentTarget.elements.order_date.value=today();tab("orders");
+   }catch(error){notice(error.message,"error");}
+ });
+ init();
+})();
+</script>
+</body>
+</html>
