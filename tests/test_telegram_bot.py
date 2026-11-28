@@ -397,5 +397,126 @@ class TelegramBotTests(unittest.TestCase):
         self.assertIn("личный чат", api_call.call_args.args[1]["text"])
 
 
+    def test_allowed_florist_creates_order_in_local_database(self):
+        bot = TelegramBot("test-token", self.store)
+        bot.florist_telegram_ids = {"12345"}
+        messages = [
+            "Создать заказ", "Получатель", "+7 900 000-00-00",
+            "Ленина, 10", "-", "12:30", "2", "15", "123", "Позвонить"
+        ]
+        with patch.object(bot, "_api_call") as api_call, patch(
+            "Module.address_lookup.DadataAPI.check_address",
+            return_value={"address": "Киров, Ленина, 10", "geo_lat": None, "geo_lon": None},
+        ) as check_address:
+            for text in messages:
+                bot._handle_update({
+                    "message": {
+                        "chat": {"id": 12345, "type": "private"},
+                        "from": {"id": 12345},
+                        "text": text,
+                    }
+                })
+
+            preview = api_call.call_args.args[1]
+            self.assertIn("Проверьте заказ", preview["text"])
+            self.assertIn("\nТелефон:", preview["text"])
+            self.assertNotIn("\\nТелефон:", preview["text"])
+            check_address.assert_called_once_with(
+                "Кировская область, Киров, Ленина, 10"
+            )
+            self.assertEqual(
+                preview["reply_markup"]["inline_keyboard"][0][0]["callback_data"],
+                "florist:create",
+            )
+            bot._handle_update({
+                "callback_query": {
+                    "id": "save-order",
+                    "from": {"id": 12345},
+                    "message": {"message_id": 77, "chat": {"id": 12345}},
+                    "data": "florist:create",
+                }
+            })
+
+        orders = self.store.list_orders(date.today())
+        self.assertEqual(len(orders), 1)
+        self.assertEqual(orders[0]["recipient"], "Получатель")
+        self.assertEqual(orders[0]["street_address"], "Киров, Ленина, 10")
+        self.assertEqual(orders[0]["order_no"], "ORD-000001")
+
+    def test_florist_can_create_order_with_delivery_time_interval(self):
+        bot = TelegramBot("test-token", self.store)
+        bot.florist_telegram_ids = {"12345"}
+        messages = [
+            "Создать заказ",
+            "Получатель",
+            "+7 900 000-00-00",
+            "Ленина, 10",
+            "-",
+            "10:10 11:11",
+            "-",
+            "-",
+            "-",
+            "-",
+        ]
+        with patch.object(bot, "_api_call") as api_call, patch(
+            "Module.address_lookup.DadataAPI.check_address",
+            return_value={
+                "address": "Киров, Ленина, 10",
+                "geo_lat": "58.60",
+                "geo_lon": "49.66",
+                "qc_geo": 0,
+            },
+        ), patch.object(
+            self.store,
+            "detect_delivery_zone",
+            return_value=(None, "outside"),
+        ):
+            for text in messages:
+                bot._handle_update(
+                    {
+                        "message": {
+                            "chat": {"id": 12345, "type": "private"},
+                            "from": {"id": 12345},
+                            "text": text,
+                        }
+                    }
+                )
+
+            preview = api_call.call_args.args[1]["text"]
+            self.assertIn("Время доставки: 10:10–11:11", preview)
+            self.assertIn("Адрес вне настроенных зон", preview)
+            bot._handle_update(
+                {
+                    "callback_query": {
+                        "id": "save-order",
+                        "from": {"id": 12345},
+                        "message": {
+                            "message_id": 77,
+                            "chat": {"id": 12345},
+                        },
+                        "data": "florist:create",
+                    }
+                }
+            )
+
+        order = self.store.list_orders(date.today())[0]
+        self.assertEqual(order["delivery_time"], "10:10")
+        self.assertEqual(order["delivery_time_end"], "11:11")
+
+    def test_telegram_user_not_in_florist_ids_cannot_create_orders(self):
+        bot = TelegramBot("test-token", self.store)
+        bot.florist_telegram_ids = {"11111"}
+        with patch.object(bot, "_api_call") as api_call:
+            bot._handle_update({
+                "message": {
+                    "chat": {"id": 22222, "type": "private"},
+                    "from": {"id": 22222},
+                    "text": "Создать заказ",
+                }
+            })
+        self.assertIn("подключить аккаунт", api_call.call_args.args[1]["text"])
+        self.assertEqual(self.store.list_orders(date.today()), [])
+
+
 if __name__ == "__main__":
     unittest.main()
