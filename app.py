@@ -9,7 +9,7 @@ from tkinter import messagebox
 
 import customtkinter as ctk
 
-from Module.address_lookup import DadataAPI
+from Module.address_lookup import resolve_delivery_address
 from Module.order_processing import (
     ADDRESS_PREFIX,
     ORDER_COLUMN_HEADERS,
@@ -740,37 +740,17 @@ class App(ctk.CTk):
                 detection_status = "unavailable"
                 address_lookup_error = None
                 try:
-                    address_data = DadataAPI.check_address(
-                        f"{ADDRESS_PREFIX}, {street_address.strip()}"
+                    address_lookup = resolve_delivery_address(
+                        street_address,
+                        self.order_store.detect_delivery_zone,
                     )
                 except RuntimeError as error:
-                    address_data = None
                     address_lookup_error = str(error)
-
-                if address_data is not None:
-                    try:
-                        latitude = float(address_data["geo_lat"])
-                        longitude = float(address_data["geo_lon"])
-                        accuracy = int(address_data["qc_geo"])
-                    except (KeyError, TypeError, ValueError):
-                        detection_status = "low_accuracy"
-                        latitude = None
-                        longitude = None
-                    else:
-                        if accuracy <= 1:
-                            try:
-                                zone_id, detection_status = (
-                                    self.order_store.detect_delivery_zone(
-                                        longitude,
-                                        latitude,
-                                    )
-                                )
-                            except ValueError:
-                                detection_status = "low_accuracy"
-                                latitude = None
-                                longitude = None
-                        else:
-                            detection_status = "low_accuracy"
+                else:
+                    zone_id = address_lookup.zone_id
+                    latitude = address_lookup.latitude
+                    longitude = address_lookup.longitude
+                    detection_status = address_lookup.zone_detection_status
 
                 order_id = self.order_store.create_order(
                     recipient=recipient_entry.get(),

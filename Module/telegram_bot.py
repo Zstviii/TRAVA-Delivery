@@ -9,7 +9,7 @@ import re
 import requests
 from dotenv import load_dotenv
 
-from Module.address_lookup import DadataAPI
+from Module.address_lookup import resolve_delivery_address
 from Module.order_processing import ADDRESS_PREFIX
 from Module.order_storage import OrderStore
 
@@ -275,7 +275,11 @@ class TelegramBot:
             "recipient": ("recipient", "Введите номер телефона получателя:"),
             "phone": ("phone", "Введите адрес доставки:"),
             "address": ("street_address", "Введите дату доставки ГГГГ-ММ-ДД (или «-» для сегодня):"),
-            "date": ("order_date", "Введите время доставки ЧЧ:ММ (или «-», если время не определено):"),
+            "date": (
+                "order_date",
+                "Введите время ЧЧ:ММ или интервал ЧЧ:ММ–ЧЧ:ММ "
+                "(«-», если время не определено):",
+            ),
             "time": ("delivery_time", "Этаж (или «-»):"),
             "floor": ("floor", "Квартира (или «-»):"),
             "apartment": ("apartment", "Домофон (или «-»):"),
@@ -295,13 +299,46 @@ class TelegramBot:
                 except ValueError:
                     self._send_message(chat_id, "Неверная дата. Используйте ГГГГ-ММ-ДД или «-».")
                     return
-        if step == "time" and value != "-":
-            try:
-                datetime.strptime(value, "%H:%M")
-            except ValueError:
-                self._send_message(chat_id, "Неверное время. Используйте ЧЧ:ММ или «-».")
-                return
-        data[field] = "" if value == "-" else value
+        if step == "time":
+            if value == "-":
+                data["delivery_time"] = ""
+                data["delivery_time_end"] = ""
+            else:
+                match = re.fullmatch(
+                    r"(\d{2}:\d{2})(?:(?:\s*(?:-|–|—)\s*|\s+)(\d{2}:\d{2}))?",
+                    value,
+                )
+                if match is None:
+                    self._send_message(
+                        chat_id,
+                        "Неверное время. Используйте ЧЧ:ММ или интервал "
+                        "ЧЧ:ММ–ЧЧ:ММ.",
+                    )
+                    return
+                start_time, end_time = match.groups()
+                try:
+                    parsed_start = datetime.strptime(start_time, "%H:%M")
+                    parsed_end = (
+                        datetime.strptime(end_time, "%H:%M")
+                        if end_time
+                        else None
+                    )
+                except ValueError:
+                    self._send_message(
+                        chat_id,
+                        "Неверное время. Используйте формат ЧЧ:ММ.",
+                    )
+                    return
+                if parsed_end is not None and parsed_end < parsed_start:
+                    self._send_message(
+                        chat_id,
+                        "Окончание доставки не может быть раньше начала.",
+                    )
+                    return
+                data["delivery_time"] = start_time
+                data["delivery_time_end"] = end_time or ""
+        else:
+            data[field] = "" if value == "-" else value
         next_steps = {"recipient": "phone", "phone": "address", "address": "date", "date": "time", "time": "floor", "floor": "apartment", "apartment": "intercom", "intercom": "comment"}
         if step != "comment":
             session["step"] = next_steps[step]
@@ -312,22 +349,71 @@ class TelegramBot:
     def _prepare_florist_order(self, chat_id: int | str, session: dict[str, object]) -> None:
         data = session["data"]
         try:
-            checked = DadataAPI.check_address(str(data["street_address"]))
-            normalized = checked.get("address")
-            if isinstance(normalized, str) and normalized.strip():
-                data["street_address"] = normalized
-            latitude, longitude = checked.get("geo_lat"), checked.get("geo_lon")
-            if latitude and longitude:
-                zone_id, zone_status = self.order_store.detect_delivery_zone(float(longitude), float(latitude))
-                data.update({"latitude": float(latitude), "longitude": float(longitude), "zone_id": zone_id, "zone_source": "dadata", "zone_detection_status": zone_status})
-        except (RuntimeError, ValueError):
+            address_lookup = resolve_delivery_address(
+                str(data["street_address"]),
+                self.order_store.detect_delivery_zone,
+            )
+            if address_lookup.normalized_address:
+                data["street_address"] = address_lookup.normalized_address
+            data.update(
+                {
+                    "latitude": address_lookup.latitude,
+                    "longitude": address_lookup.longitude,
+                    "zone_id": address_lookup.zone_id,
+                    "zone_source": (
+                        "dadata" if address_lookup.zone_id is not None else None
+                    ),
+                    "zone_detection_status": (
+                        address_lookup.zone_detection_status
+                    ),
+                }
+            )
+        except (RuntimeError, ValueError) as error:
             data["zone_detection_status"] = "unavailable"
+            data["address_lookup_error"] = str(error)
         session["step"] = "confirm"
-        preview = ("Проверьте заказ перед сохранением:\\n\\n"
-            f"Получатель: {data['recipient']}\\nТелефон: {data['phone']}\\nАдрес: {data['street_address']}\\n"
-            f"Дата: {data['order_date']}\\nВремя: {data['delivery_time'] or 'Не указано'}\\n"
-            f"Этаж: {data['floor'] or '—'}\\nКвартира: {data['apartment'] or '—'}\\n"
-            f"Домофон: {data['intercom'] or '—'}\\nКомментарий: {data['comment'] or '—'}")
+        delivery_time = str(data.get("delivery_time") or "")
+        delivery_time_end = str(data.get("delivery_time_end") or "")
+        if delivery_time and delivery_time_end:
+            delivery_time = f"{delivery_time}–{delivery_time_end}"
+        zone_details = {
+            "outside": "Адрес вне настроенных зон. Попросите администратора "
+            "назначить зону в приложении.",
+            "ambiguous": "Адрес попал на границу или сразу в несколько зон. "
+            "Попросите администратора выбрать зону в приложении.",
+            "low_accuracy": "DaData не определила адрес с нужной точностью. "
+            "Попросите администратора выбрать зону в приложении.",
+            "unavailable": (
+                f"Не удалось проверить адрес: "
+                f"{data.get('address_lookup_error', 'DaData недоступна')}"
+            ),
+        }
+        zone_status = str(data.get("zone_detection_status", "unavailable"))
+        zone_summary = (
+            "Определена автоматически."
+            if data.get("zone_id") is not None
+            else zone_details.get(
+                zone_status,
+                "Не определена. Попросите администратора назначить зону "
+                "в приложении.",
+            )
+        )
+        preview = "\n".join(
+            (
+                "Проверьте заказ перед сохранением:",
+                "",
+                f"Получатель: {data['recipient']}",
+                f"Телефон: {data['phone']}",
+                f"Адрес: {data['street_address']}",
+                f"Дата: {data['order_date']}",
+                f"Время доставки: {delivery_time or 'Не указано'}",
+                f"Этаж: {data['floor'] or '—'}",
+                f"Квартира: {data['apartment'] or '—'}",
+                f"Домофон: {data['intercom'] or '—'}",
+                f"Комментарий: {data['comment'] or '—'}",
+                f"Зона: {zone_summary}",
+            )
+        )
         self._send_message(chat_id, preview, reply_markup={"inline_keyboard": [[{"text": "Сохранить заказ", "callback_data": "florist:create"}, {"text": "Отменить", "callback_data": "florist:cancel"}]]})
 
     def _handle_florist_callback(self, callback_id: object, chat_id: int | str, message_id: int, data: str) -> None:
@@ -345,7 +431,25 @@ class TelegramBot:
             return
         order = session["data"]
         try:
-            order_id = self.order_store.create_order(recipient=str(order["recipient"]), phone=str(order["phone"]), street_address=str(order["street_address"]), floor=str(order.get("floor", "")), apartment=str(order.get("apartment", "")), intercom=str(order.get("intercom", "")), order_date=str(order["order_date"]), delivery_time=str(order.get("delivery_time", "")), comment=str(order.get("comment", "")), zone_id=order.get("zone_id"), zone_source=order.get("zone_source"), zone_detection_status=str(order.get("zone_detection_status", "unavailable")), latitude=order.get("latitude"), longitude=order.get("longitude"))
+            order_id = self.order_store.create_order(
+                recipient=str(order["recipient"]),
+                phone=str(order["phone"]),
+                street_address=str(order["street_address"]),
+                floor=str(order.get("floor", "")),
+                apartment=str(order.get("apartment", "")),
+                intercom=str(order.get("intercom", "")),
+                order_date=str(order["order_date"]),
+                delivery_time=str(order.get("delivery_time", "")),
+                delivery_time_end=str(order.get("delivery_time_end", "")),
+                comment=str(order.get("comment", "")),
+                zone_id=order.get("zone_id"),
+                zone_source=order.get("zone_source"),
+                zone_detection_status=str(
+                    order.get("zone_detection_status", "unavailable")
+                ),
+                latitude=order.get("latitude"),
+                longitude=order.get("longitude"),
+            )
         except (ValueError, sqlite3.Error):
             self._api_call("answerCallbackQuery", {"callback_query_id": callback_id, "text": "Не удалось сохранить заказ. Проверьте данные и повторите."})
             return
