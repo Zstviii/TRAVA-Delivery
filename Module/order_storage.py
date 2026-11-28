@@ -290,6 +290,156 @@ class OrderStore:
             ).fetchone()
         return dict(row) if row is not None else None
 
+    def update_order(
+        self,
+        order_id: int,
+        *,
+        recipient: str,
+        phone: str,
+        street_address: str,
+        floor: str,
+        apartment: str,
+        intercom: str,
+        order_date: date | str,
+        delivery_time: str,
+        delivery_time_end: str,
+        comment: str,
+        courier_phone: str | None,
+        zone_id: int | None,
+    ) -> None:
+        recipient = recipient.strip()
+        phone = phone.strip()
+        street_address = street_address.strip()
+        floor = floor.strip()
+        apartment = apartment.strip()
+        intercom = intercom.strip()
+        delivery_time = delivery_time.strip()
+        delivery_time_end = delivery_time_end.strip()
+        comment = comment.strip()
+        if not recipient or not phone or not street_address:
+            raise ValueError("Заполните имя получателя, телефон и адрес.")
+        if delivery_time_end and not delivery_time:
+            raise ValueError("Укажите начало промежутка доставки.")
+        for value in (delivery_time, delivery_time_end):
+            if value:
+                try:
+                    datetime.strptime(value, "%H:%M")
+                except ValueError as error:
+                    raise ValueError(
+                        "Время доставки укажите в формате ЧЧ:ММ."
+                    ) from error
+        if (
+            delivery_time
+            and delivery_time_end
+            and datetime.strptime(delivery_time_end, "%H:%M").time()
+            < datetime.strptime(delivery_time, "%H:%M").time()
+        ):
+            raise ValueError("Время окончания не может быть раньше начала.")
+        try:
+            if isinstance(order_date, datetime):
+                order_date = order_date.date()
+            if isinstance(order_date, date):
+                normalized_order_date = order_date.isoformat()
+            else:
+                date_value = str(order_date).strip()
+                try:
+                    normalized_order_date = date.fromisoformat(date_value).isoformat()
+                except ValueError:
+                    normalized_order_date = datetime.strptime(
+                        date_value,
+                        "%d.%m.%Y",
+                    ).date().isoformat()
+        except (TypeError, ValueError) as error:
+            raise ValueError("Некорректная дата доставки.") from error
+
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            order = connection.execute(
+                """
+                SELECT courier_id, zone_id, status, zone_source,
+                       zone_detection_status, street_address, latitude, longitude
+                FROM orders WHERE id = ?
+                """,
+                (order_id,),
+            ).fetchone()
+            if order is None:
+                raise LookupError("Заказ не найден.")
+
+            courier_id = None
+            if courier_phone is not None:
+                courier = connection.execute(
+                    "SELECT id, is_active FROM couriers WHERE phone = ?",
+                    (courier_phone,),
+                ).fetchone()
+                if courier is None:
+                    raise ValueError("Курьер с таким номером не найден.")
+                if (
+                    not courier["is_active"]
+                    and order["courier_id"] != courier["id"]
+                ):
+                    raise ValueError("Нельзя назначить курьера из архива.")
+                courier_id = courier["id"]
+
+            courier_changed = order["courier_id"] != courier_id
+            zone_changed = order["zone_id"] != zone_id
+            if zone_changed and zone_id is not None and connection.execute(
+                "SELECT 1 FROM delivery_zones WHERE id = ? AND is_active = 1",
+                (zone_id,),
+            ).fetchone() is None:
+                raise ValueError("Зона не найдена или уже не активна.")
+            if order["status"] == "Доставлен" and courier_changed:
+                raise ValueError("Нельзя изменить курьера у доставленного заказа.")
+
+            status = order["status"]
+            if courier_changed:
+                status = "Взят курьером" if courier_id is not None else "Новый"
+            address_changed = street_address != order["street_address"]
+            zone_source = order["zone_source"]
+            zone_detection_status = order["zone_detection_status"]
+            if zone_changed:
+                zone_source = "manual" if zone_id is not None else None
+                zone_detection_status = (
+                    "manual" if zone_id is not None else "unassigned"
+                )
+            elif address_changed:
+                zone_source = "manual" if zone_id is not None else None
+                zone_detection_status = (
+                    "manual" if zone_id is not None else "unavailable"
+                )
+
+            connection.execute(
+                """
+                UPDATE orders
+                SET recipient = ?, phone = ?, street_address = ?, floor = ?,
+                    apartment = ?, intercom = ?, order_date = ?,
+                    delivery_time = ?, delivery_time_end = ?, comment = ?,
+                    courier_id = ?, zone_id = ?, zone_source = ?,
+                    zone_detection_status = ?, latitude = ?, longitude = ?,
+                    status = ?
+                WHERE id = ?
+                """,
+                (
+                    recipient,
+                    phone,
+                    street_address,
+                    floor,
+                    apartment,
+                    intercom,
+                    normalized_order_date,
+                    delivery_time,
+                    delivery_time_end,
+                    comment,
+                    courier_id,
+                    zone_id,
+                    zone_source,
+                    zone_detection_status,
+                    None if address_changed else order["latitude"],
+                    None if address_changed else order["longitude"],
+                    status,
+                    order_id,
+                ),
+            )
+
     def list_delivery_zones(self) -> list[dict[str, object]]:
         with self._connection() as connection:
             rows = connection.execute(

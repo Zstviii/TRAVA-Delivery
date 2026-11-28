@@ -15,7 +15,6 @@ from Module.order_processing import (
     ADDRESS_PREFIX,
     ORDER_COLUMN_HEADERS,
     OrderTableRow,
-    format_delivery_time,
     prepare_orders,
 )
 from Module.order_storage import OrderStore
@@ -661,10 +660,10 @@ class App(ctk.CTk):
         time_range = ctk.CTkFrame(form, fg_color="transparent")
         time_range.grid(row=14, column=0, sticky="ew", pady=(0, 4))
         time_range.grid_columnconfigure((0, 2), weight=1)
-        time_entry = ctk.CTkEntry(
+        time_entry, get_delivery_time, _ = self._create_time_picker_control(
             time_range,
-            height=36,
-            placeholder_text="С, например 10:00",
+            placeholder="С: выбрать время",
+            title="Начало доставки",
         )
         time_entry.grid(row=0, column=0, sticky="ew")
         ctk.CTkLabel(
@@ -673,10 +672,10 @@ class App(ctk.CTk):
             font=ctk.CTkFont(size=14),
             text_color=MUTED_COLOR,
         ).grid(row=0, column=1, padx=8)
-        time_end_entry = ctk.CTkEntry(
+        time_end_entry, get_delivery_time_end, _ = self._create_time_picker_control(
             time_range,
-            height=36,
-            placeholder_text="По, например 14:00",
+            placeholder="По: выбрать время",
+            title="Окончание доставки",
         )
         time_end_entry.grid(row=0, column=2, sticky="ew")
 
@@ -706,8 +705,8 @@ class App(ctk.CTk):
                 return
 
             try:
-                delivery_time = time_entry.get().strip()
-                delivery_time_end = time_end_entry.get().strip()
+                delivery_time = get_delivery_time()
+                delivery_time_end = get_delivery_time_end()
                 if delivery_time_end and not delivery_time:
                     raise ValueError("Укажите начало промежутка доставки.")
                 for value in (delivery_time, delivery_time_end):
@@ -1271,6 +1270,200 @@ class App(ctk.CTk):
         if label.cget("wraplength") != wraplength:
             label.configure(wraplength=wraplength)
 
+    def _create_time_picker_control(
+        self,
+        parent,
+        *,
+        initial_value="",
+        placeholder="Выбрать время",
+        title="Время доставки",
+    ):
+        value = {"time": initial_value}
+        button = ctk.CTkButton(
+            parent,
+            text=initial_value or placeholder,
+            height=36,
+            fg_color=SURFACE_COLOR,
+            hover_color="#EEF3EE",
+            text_color=TEXT_COLOR,
+            border_width=1,
+            border_color=BORDER_COLOR,
+        )
+
+        def set_value(new_value):
+            value["time"] = new_value
+            button.configure(text=new_value or placeholder)
+
+        button.configure(
+            command=lambda: self._open_time_picker(
+                value["time"],
+                set_value,
+                title=title,
+            )
+        )
+        return button, lambda: value["time"], set_value
+
+    def _open_time_picker(self, initial_value, on_selected, *, title):
+        try:
+            initial_time = datetime.strptime(initial_value, "%H:%M")
+            hour, minute = initial_time.hour, initial_time.minute
+        except (TypeError, ValueError):
+            hour, minute = 9, 0
+
+        window = ctk.CTkToplevel(self)
+        window.title(title)
+        window.geometry("360x390")
+        window.resizable(False, False)
+        window.transient(self)
+
+        ctk.CTkLabel(
+            window,
+            text=title,
+            font=ctk.CTkFont(size=18, weight="bold"),
+            text_color=TEXT_COLOR,
+        ).pack(pady=(18, 8))
+
+        wheels = ctk.CTkFrame(window, fg_color="transparent")
+        wheels.pack(fill="x", padx=24, pady=4)
+        wheels.grid_columnconfigure((0, 1), weight=1)
+
+        def create_wheel_column(column, label, initial, limit):
+            wheel = ctk.CTkFrame(
+                wheels,
+                fg_color=SURFACE_COLOR,
+                corner_radius=12,
+                border_width=1,
+                border_color=BORDER_COLOR,
+            )
+            wheel.grid(row=0, column=column, sticky="nsew", padx=6)
+            ctk.CTkLabel(
+                wheel,
+                text=label,
+                font=ctk.CTkFont(size=12),
+                text_color=MUTED_COLOR,
+            ).pack(pady=(10, 4))
+
+            number = {"value": initial}
+            previous = ctk.CTkLabel(
+                wheel,
+                text="",
+                font=ctk.CTkFont(size=15),
+                text_color=MUTED_COLOR,
+            )
+            selected = ctk.CTkLabel(
+                wheel,
+                text="",
+                width=78,
+                height=44,
+                corner_radius=8,
+                fg_color="#EEF3EE",
+                font=ctk.CTkFont(size=26, weight="bold"),
+                text_color=TEXT_COLOR,
+            )
+            following = ctk.CTkLabel(
+                wheel,
+                text="",
+                font=ctk.CTkFont(size=15),
+                text_color=MUTED_COLOR,
+            )
+
+            def refresh():
+                previous.configure(text=f"{(number['value'] - 1) % limit:02d}")
+                selected.configure(text=f"{number['value']:02d}")
+                following.configure(text=f"{(number['value'] + 1) % limit:02d}")
+
+            def change(amount):
+                number["value"] = (number["value"] + amount) % limit
+                refresh()
+
+            def scroll(event):
+                if getattr(event, "delta", 0):
+                    change(-1 if event.delta > 0 else 1)
+                else:
+                    change(-1 if getattr(event, "num", 0) == 4 else 1)
+                return "break"
+
+            ctk.CTkButton(
+                wheel,
+                text="▲",
+                width=42,
+                height=28,
+                fg_color="transparent",
+                hover_color="#EEF3EE",
+                text_color=MUTED_COLOR,
+                command=lambda: change(-1),
+            ).pack(pady=(0, 1))
+            previous.pack(pady=1)
+            selected.pack(pady=2)
+            following.pack(pady=1)
+            ctk.CTkButton(
+                wheel,
+                text="▼",
+                width=42,
+                height=28,
+                fg_color="transparent",
+                hover_color="#EEF3EE",
+                text_color=MUTED_COLOR,
+                command=lambda: change(1),
+            ).pack(pady=(1, 8))
+            for widget in (wheel, previous, selected, following):
+                widget.bind("<MouseWheel>", scroll, add="+")
+                widget.bind("<Button-4>", scroll, add="+")
+                widget.bind("<Button-5>", scroll, add="+")
+
+            refresh()
+            return number
+
+        hour_value = create_wheel_column(0, "Часы", hour, 24)
+        minute_value = create_wheel_column(1, "Минуты", minute, 60)
+
+        ctk.CTkLabel(
+            window,
+            text="Прокручивайте колесо или используйте стрелки",
+            font=ctk.CTkFont(size=11),
+            text_color=MUTED_COLOR,
+        ).pack(pady=(8, 12))
+
+        buttons = ctk.CTkFrame(window, fg_color="transparent")
+        buttons.pack(fill="x", padx=24, pady=(0, 16))
+
+        def clear_time():
+            on_selected("")
+            window.destroy()
+
+        def confirm_time():
+            on_selected(f"{hour_value['value']:02d}:{minute_value['value']:02d}")
+            window.destroy()
+
+        ctk.CTkButton(
+            buttons,
+            text="Без времени",
+            width=105,
+            fg_color="#E8ECE8",
+            hover_color="#DCE3DC",
+            text_color=TEXT_COLOR,
+            command=clear_time,
+        ).pack(side="left")
+        ctk.CTkButton(
+            buttons,
+            text="Отмена",
+            width=80,
+            fg_color="transparent",
+            hover_color="#EEF3EE",
+            text_color=TEXT_COLOR,
+            command=window.destroy,
+        ).pack(side="right", padx=(8, 0))
+        ctk.CTkButton(
+            buttons,
+            text="Готово",
+            width=90,
+            fg_color=PRIMARY_COLOR,
+            hover_color=PRIMARY_HOVER_COLOR,
+            text_color=SURFACE_COLOR,
+            command=confirm_time,
+        ).pack(side="right")
+        window.grab_set()
+
     def _open_side_panel(self, title: str, width: int):
         if self._side_panel is not None and self._side_panel.winfo_exists():
             self._side_panel.destroy()
@@ -1578,24 +1771,87 @@ class App(ctk.CTk):
                 wraplength=440,
             ).grid(row=row + 1, column=0, sticky="ew", pady=(0, 3))
 
-        full_address = (
-            f"{ADDRESS_PREFIX}, {order['street_address']}"
-            if order["street_address"]
-            else "—"
+        def add_editable_entry(row, title, value, placeholder=""):
+            ctk.CTkLabel(
+                details,
+                text=title,
+                font=ctk.CTkFont(size=11, weight="bold"),
+                text_color=MUTED_COLOR,
+            ).grid(row=row, column=0, sticky="w", pady=(5, 0))
+            entry = ctk.CTkEntry(
+                details,
+                height=36,
+                placeholder_text=placeholder,
+            )
+            entry.insert(0, str(value or ""))
+            entry.grid(row=row + 1, column=0, sticky="ew", pady=(0, 3))
+            return entry
+
+        recipient_entry = add_editable_entry(
+            1, "Получатель", order["recipient"], "Имя получателя"
         )
-        for row, title, value in (
-            (1, "Получатель", order["recipient"]),
-            (3, "Телефон получателя", order["phone"]),
-            (5, "Адрес", full_address),
-            (7, "Этаж", order["floor"]),
-            (9, "Квартира", order["apartment"]),
-            (11, "Домофон", order["intercom"]),
-            (13, "Дата доставки", order["order_date"]),
-            (15, "Время доставки", format_delivery_time(order)),
-            (17, "Комментарий", order["comment"]),
-            (19, "Текущий статус", order["status"]),
-        ):
-            add_detail(row, title, value)
+        phone_entry = add_editable_entry(
+            3, "Телефон получателя", order["phone"], "+7 ..."
+        )
+        address_entry = add_editable_entry(
+            5,
+            f"Адрес ({ADDRESS_PREFIX})",
+            order["street_address"],
+            "Улица, дом, корпус",
+        )
+        floor_entry = add_editable_entry(7, "Этаж", order["floor"])
+        apartment_entry = add_editable_entry(9, "Квартира", order["apartment"])
+        intercom_entry = add_editable_entry(11, "Домофон", order["intercom"])
+        try:
+            order_date_value = date.fromisoformat(str(order["order_date"])).strftime(
+                "%d.%m.%Y"
+            )
+        except ValueError:
+            order_date_value = str(order["order_date"])
+        order_date_entry = add_editable_entry(
+            13, "Дата доставки", order_date_value, "ДД.ММ.ГГГГ"
+        )
+
+        ctk.CTkLabel(
+            details,
+            text="Промежуток доставки",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=MUTED_COLOR,
+        ).grid(row=15, column=0, sticky="w", pady=(5, 3))
+        time_range = ctk.CTkFrame(details, fg_color="transparent")
+        time_range.grid(row=16, column=0, sticky="ew", pady=(0, 4))
+        time_range.grid_columnconfigure((0, 2), weight=1)
+        time_entry, get_delivery_time, _ = self._create_time_picker_control(
+            time_range,
+            initial_value=str(order["delivery_time"] or ""),
+            placeholder="С: выбрать",
+            title="Начало доставки",
+        )
+        time_entry.grid(row=0, column=0, sticky="ew")
+        ctk.CTkLabel(
+            time_range,
+            text="—",
+            font=ctk.CTkFont(size=14),
+            text_color=MUTED_COLOR,
+        ).grid(row=0, column=1, padx=8)
+        time_end_entry, get_delivery_time_end, _ = self._create_time_picker_control(
+            time_range,
+            initial_value=str(order["delivery_time_end"] or ""),
+            placeholder="По: выбрать",
+            title="Окончание доставки",
+        )
+        time_end_entry.grid(row=0, column=2, sticky="ew")
+
+        ctk.CTkLabel(
+            details,
+            text="Комментарий",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=MUTED_COLOR,
+        ).grid(row=17, column=0, sticky="w", pady=(5, 0))
+        comment_entry = ctk.CTkTextbox(details, height=72)
+        comment_entry.insert("1.0", str(order["comment"] or ""))
+        comment_entry.grid(row=18, column=0, sticky="ew", pady=(0, 3))
+        add_detail(19, "Текущий статус", order["status"])
 
         detection_labels = {
             "matched": "Зона определена автоматически по DaData",
@@ -1739,10 +1995,29 @@ class App(ctk.CTk):
 
         def save_details():
             try:
-                self.order_store.update_order_assignment(
+                try:
+                    order_date_value = datetime.strptime(
+                        order_date_entry.get().strip(),
+                        "%d.%m.%Y",
+                    ).date()
+                except ValueError as error:
+                    raise ValueError(
+                        "Укажите дату в формате ДД.ММ.ГГГГ."
+                    ) from error
+                self.order_store.update_order(
                     int(order_id),
-                    courier_options[courier_menu.get()],
-                    zone_options[zone_menu.get()],
+                    recipient=recipient_entry.get(),
+                    phone=phone_entry.get(),
+                    street_address=address_entry.get(),
+                    floor=floor_entry.get(),
+                    apartment=apartment_entry.get(),
+                    intercom=intercom_entry.get(),
+                    order_date=order_date_value,
+                    delivery_time=get_delivery_time(),
+                    delivery_time_end=get_delivery_time_end(),
+                    comment=comment_entry.get("1.0", "end"),
+                    courier_phone=courier_options[courier_menu.get()],
+                    zone_id=zone_options[zone_menu.get()],
                 )
             except (ValueError, LookupError, sqlite3.Error) as error:
                 if isinstance(error, sqlite3.Error):
@@ -1769,7 +2044,7 @@ class App(ctk.CTk):
         ).pack(side="right", padx=(8, 0))
         ctk.CTkButton(
             buttons,
-            text="Сохранить",
+            text="Сохранить изменения",
             height=38,
             fg_color=PRIMARY_COLOR,
             hover_color=PRIMARY_HOVER_COLOR,

@@ -64,6 +64,81 @@ class OrderStoreTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "раньше"):
             self.create_order(delivery_time="14:00", delivery_time_end="12:00")
 
+    def test_update_order_saves_fields_and_validates_before_writing(self):
+        zone = self.store.replace_delivery_zones(
+            [
+                {
+                    "name": "Центр",
+                    "geometry": {
+                        "type": "Polygon",
+                        "coordinates": [
+                            [
+                                [49.0, 58.0],
+                                [50.0, 58.0],
+                                [50.0, 59.0],
+                                [49.0, 59.0],
+                            ]
+                        ],
+                    },
+                }
+            ]
+        )[0]
+        courier_phone = "+7 911 111-11-11"
+        self.store.add_courier("Курьер", courier_phone)
+        order_id = self.create_order(
+            zone_source="auto",
+            zone_detection_status="matched",
+            latitude=58.5,
+            longitude=49.5,
+        )
+        updated_fields = {
+            "recipient": "Мария",
+            "phone": "+7 900 111-22-33",
+            "street_address": "Мира, 20",
+            "floor": "5",
+            "apartment": "42",
+            "intercom": "42",
+            "order_date": date(2026, 12, 1),
+            "delivery_time": "10:00",
+            "delivery_time_end": "12:30",
+            "comment": "Позвонить у подъезда",
+            "courier_phone": courier_phone,
+            "zone_id": zone["id"],
+        }
+
+        self.store.update_order(order_id, **updated_fields)
+
+        saved = self.store.get_order(order_id)
+        self.assertEqual(saved["recipient"], "Мария")
+        self.assertEqual(saved["phone"], "+7 900 111-22-33")
+        self.assertEqual(saved["street_address"], "Мира, 20")
+        self.assertEqual(saved["floor"], "5")
+        self.assertEqual(saved["apartment"], "42")
+        self.assertEqual(saved["intercom"], "42")
+        self.assertEqual(saved["order_date"], "2026-12-01")
+        self.assertEqual(saved["delivery_time"], "10:00")
+        self.assertEqual(saved["delivery_time_end"], "12:30")
+        self.assertEqual(saved["comment"], "Позвонить у подъезда")
+        self.assertEqual(saved["courier_phone"], courier_phone)
+        self.assertEqual(saved["zone_id"], zone["id"])
+        self.assertEqual(saved["zone_source"], "manual")
+        self.assertEqual(saved["zone_detection_status"], "manual")
+        self.assertIsNone(saved["latitude"])
+        self.assertIsNone(saved["longitude"])
+
+        with self.assertRaisesRegex(ValueError, "раньше"):
+            self.store.update_order(
+                order_id,
+                **{
+                    **updated_fields,
+                    "delivery_time": "14:00",
+                    "delivery_time_end": "12:00",
+                },
+            )
+        unchanged = self.store.get_order(order_id)
+        self.assertEqual(unchanged["delivery_time"], "10:00")
+        self.assertEqual(unchanged["recipient"], "Мария")
+
     def test_order_fields_persist_and_courier_assignment_updates_phone(self):
         order_id = self.create_order()
         self.store.add_courier("Курьер", "+7 911 111-11-11")
