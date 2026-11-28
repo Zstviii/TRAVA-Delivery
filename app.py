@@ -17,6 +17,7 @@ from Module.order_processing import (
     prepare_orders,
 )
 from Module.order_storage import OrderStore
+from Module.mini_app import MiniAppServer
 from Module.telegram_bot import TelegramBot
 from Module.zone_map import ZoneMapServer
 
@@ -85,6 +86,7 @@ class App(ctk.CTk):
         self.telegram_bot = None
         self.telegram_thread = None
         self.telegram_username = None
+        self.mini_app_server = None
         self.zone_map_server = None
         self.bind_all("<Button-1>", self._close_calendar_on_outside_click, add="+")
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -1767,6 +1769,13 @@ class App(ctk.CTk):
             )
             return
 
+        try:
+            self.mini_app_server = MiniAppServer(self.order_store, token)
+            self.mini_app_server.start()
+        except OSError as error:
+            self._set_telegram_status(f"Не удалось запустить Mini App: {error}", False)
+            self.mini_app_server = None
+
         self.telegram_bot = TelegramBot(
             token,
             self.order_store,
@@ -1822,6 +1831,8 @@ class App(ctk.CTk):
 
     def _on_close(self):
         self.telegram_stop_event.set()
+        if self.mini_app_server is not None:
+            self.mini_app_server.close()
         if self.zone_map_server is not None:
             self.zone_map_server.close()
         self.destroy()
