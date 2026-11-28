@@ -209,7 +209,7 @@ class MiniAppServer:
                 except Exception:
                     self.send_json(500, {"error": "Не удалось изменить статус."})
 
-        self.server = ThreadingHTTPServer(("0.0.0.0", int(os.getenv("MINI_APP_PORT", "8765"))), Handler)
+        self.server = ThreadingHTTPServer(("127.0.0.1", int(os.getenv("MINI_APP_PORT", "8765"))), Handler)
         self.server.daemon_threads = True
         self.thread = threading.Thread(
             target=self.server.serve_forever, daemon=True, name="TRAVA-MiniApp"
