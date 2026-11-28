@@ -1,5 +1,6 @@
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from datetime import datetime
 
 ORDER_COLUMN_HEADERS = (
     "Номер заказа",
@@ -30,14 +31,30 @@ def _display_value(value: object, fallback: str = EMPTY_VALUE) -> str:
     return text or fallback
 
 
-def _order_sort_key(order: Mapping[str, object]) -> tuple[bool, str, int]:
+def _order_sort_key(order: Mapping[str, object]) -> tuple[bool, bool, int, str, int]:
     delivery_time = _display_value(order.get("delivery_time"), "")
     order_id = order.get("id")
     try:
         numeric_id = int(order_id) if order_id is not None else 0
     except (TypeError, ValueError):
         numeric_id = 0
-    return not bool(delivery_time), delivery_time, numeric_id
+
+    try:
+        parsed_time = datetime.strptime(delivery_time, "%H:%M")
+    except ValueError:
+        invalid_time = bool(delivery_time)
+        minutes_since_midnight = 0
+    else:
+        invalid_time = False
+        minutes_since_midnight = parsed_time.hour * 60 + parsed_time.minute
+
+    return (
+        not bool(delivery_time),
+        invalid_time,
+        minutes_since_midnight,
+        delivery_time,
+        numeric_id,
+    )
 
 
 def format_address(order: Mapping[str, object]) -> str:

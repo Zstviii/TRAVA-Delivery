@@ -21,6 +21,17 @@ class PrepareOrdersTests(unittest.TestCase):
 
         self.assertEqual([row.order_id for row in rows], ["1", "2", "3"])
 
+    def test_orders_with_single_digit_hours_sort_by_time_of_day(self):
+        rows = prepare_orders(
+            [
+                {"id": 10, "delivery_time": "10:00"},
+                {"id": 12, "delivery_time": "8:30"},
+                {"id": 11, "delivery_time": "9:00"},
+            ]
+        )
+
+        self.assertEqual([row.order_id for row in rows], ["12", "11", "10"])
+
     def test_order_row_contains_zone_comment_and_assigned_courier_name(self):
         rows = prepare_orders(
             [
