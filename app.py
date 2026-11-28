@@ -18,6 +18,7 @@ from Module.order_processing import (
 )
 from Module.order_storage import OrderStore
 from Module.mini_app import MiniAppServer
+from Module.cloudflare_tunnel import CloudflareTunnel
 from Module.telegram_bot import TelegramBot
 from Module.zone_map import ZoneMapServer
 
@@ -87,6 +88,7 @@ class App(ctk.CTk):
         self.telegram_thread = None
         self.telegram_username = None
         self.mini_app_server = None
+        self.cloudflare_tunnel = None
         self.zone_map_server = None
         self.bind_all("<Button-1>", self._close_calendar_on_outside_click, add="+")
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -1775,6 +1777,7 @@ class App(ctk.CTk):
         except OSError as error:
             self._set_telegram_status(f"Не удалось запустить Mini App: {error}", False)
             self.mini_app_server = None
+            return
 
         self.telegram_bot = TelegramBot(
             token,
@@ -1788,6 +1791,41 @@ class App(ctk.CTk):
             daemon=True,
         )
         self.telegram_thread.start()
+
+        # Если указан постоянный адрес, используем его. Иначе создаём
+        # временный HTTPS-адрес Cloudflare для работы Mini App извне.
+        public_url = os.getenv("MINI_APP_URL", "").strip()
+        if public_url:
+            self._configure_mini_app_url(public_url)
+        else:
+            try:
+                self.cloudflare_tunnel = CloudflareTunnel(
+                    "http://127.0.0.1:" + os.getenv("MINI_APP_PORT", "8765"),
+                    on_url=lambda url: self.after(
+                        0, lambda value=url: self._configure_mini_app_url(value)
+                    ),
+                    on_status=lambda status: self.after(
+                        0, lambda value=status: self._set_telegram_status(value, False)
+                    ),
+                )
+                self.cloudflare_tunnel.start()
+            except (OSError, ValueError) as error:
+                self._set_telegram_status(
+                    f"Mini App: {error}", False
+                )
+
+    def _configure_mini_app_url(self, url):
+        if self.telegram_bot is None:
+            return
+        try:
+            self.telegram_bot.set_mini_app_url(url)
+            self._set_telegram_status(
+                "Mini App доступно в Telegram", True
+            )
+        except Exception as error:
+            self._set_telegram_status(
+                f"Не удалось настроить кнопку Mini App: {error}", False
+            )
 
     def _queue_telegram_status(self, text, connected):
         if self.telegram_stop_event.is_set():
@@ -1831,6 +1869,8 @@ class App(ctk.CTk):
 
     def _on_close(self):
         self.telegram_stop_event.set()
+        if self.cloudflare_tunnel is not None:
+            self.cloudflare_tunnel.close()
         if self.mini_app_server is not None:
             self.mini_app_server.close()
         if self.zone_map_server is not None:
