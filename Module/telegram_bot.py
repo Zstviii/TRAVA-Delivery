@@ -1,13 +1,15 @@
+import os
 import sqlite3
 import threading
 from collections.abc import Callable, Mapping
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 import re
 
 import requests
 from dotenv import load_dotenv
 
+from Module.address_lookup import DadataAPI
 from Module.order_processing import ADDRESS_PREFIX
 from Module.order_storage import OrderStore
 
@@ -15,6 +17,7 @@ load_dotenv(Path(__file__).resolve().parent.parent / "Config" / ".env")
 
 TELEGRAM_API_URL = "https://api.telegram.org/bot{token}/{method}"
 ORDERS_BUTTON = "Заказы"
+CREATE_ORDER_BUTTON = "Создать заказ"
 MESSAGE_LIMIT = 3500
 
 
@@ -42,6 +45,8 @@ class TelegramBot:
         self.on_courier_linked = on_courier_linked
         self.on_order_updated = on_order_updated
         self.pending_link_chats: dict[str, datetime] = {}
+        self.florist_telegram_ids = {v.strip() for v in os.getenv('FLORIST_TELEGRAM_IDS', '').split(',') if v.strip().isdigit()}
+        self.florist_sessions: dict[str, dict[str, object]] = {}
 
     def _api_call(self, method: str, payload: dict[str, object] | None = None):
         response = self.session.post(
@@ -147,6 +152,18 @@ class TelegramBot:
 
         parts = text.strip().split(maxsplit=1)
         command = parts[0].split("@", maxsplit=1)[0].lower() if parts else ""
+
+        if str(user_id) in self.florist_telegram_ids:
+            if command == "/start":
+                self._send_message(
+                    chat_id,
+                    "Здравствуйте! Здесь можно быстро создать заказ для Trava. Все заказы сохраняются в локальную базу магазина.",
+                    reply_markup=self._florist_keyboard(),
+                )
+                return
+            self._handle_florist_message(chat_id, text)
+            return
+
         if command == "/start":
             now = datetime.now(timezone.utc)
             self.pending_link_chats = {
@@ -231,6 +248,114 @@ class TelegramBot:
             "Сначала отправьте /start, чтобы подключить аккаунт. "
             "Для просмотра заказов используйте кнопку «Заказы».",
         )
+
+    @staticmethod
+    def _florist_keyboard() -> dict[str, object]:
+        return {"keyboard": [[{"text": CREATE_ORDER_BUTTON}]], "resize_keyboard": True}
+
+    def _handle_florist_message(self, chat_id: int | str, text: str) -> None:
+        key = str(chat_id)
+        value = text.strip()
+        if value.casefold() in {"/cancel", "отмена", "отменить"}:
+            self.florist_sessions.pop(key, None)
+            self._send_message(chat_id, "Создание заказа отменено.", reply_markup=self._florist_keyboard())
+            return
+        if value.casefold() in {CREATE_ORDER_BUTTON.casefold(), "/neworder"}:
+            self.florist_sessions[key] = {"step": "recipient", "data": {}}
+            self._send_message(chat_id, "Введите имя получателя:")
+            return
+        session = self.florist_sessions.get(key)
+        if session is None:
+            self._send_message(chat_id, "Нажмите «Создать заказ», чтобы начать. Для отмены отправьте /cancel.", reply_markup=self._florist_keyboard())
+            return
+
+        step = str(session["step"])
+        data = session["data"]
+        prompts = {
+            "recipient": ("recipient", "Введите номер телефона получателя:"),
+            "phone": ("phone", "Введите адрес доставки:"),
+            "address": ("street_address", "Введите дату доставки ГГГГ-ММ-ДД (или «-» для сегодня):"),
+            "date": ("order_date", "Введите время доставки ЧЧ:ММ (или «-», если время не определено):"),
+            "time": ("delivery_time", "Этаж (или «-»):"),
+            "floor": ("floor", "Квартира (или «-»):"),
+            "apartment": ("apartment", "Домофон (или «-»):"),
+            "intercom": ("intercom", "Комментарий (или «-»):"),
+            "comment": ("comment", None),
+        }
+        field, prompt = prompts[step]
+        if step in {"recipient", "phone", "address"} and not value:
+            self._send_message(chat_id, "Поле не должно быть пустым. Повторите ввод:")
+            return
+        if step == "date":
+            if value == "-":
+                value = date.today().isoformat()
+            else:
+                try:
+                    datetime.strptime(value, "%Y-%m-%d")
+                except ValueError:
+                    self._send_message(chat_id, "Неверная дата. Используйте ГГГГ-ММ-ДД или «-».")
+                    return
+        if step == "time" and value != "-":
+            try:
+                datetime.strptime(value, "%H:%M")
+            except ValueError:
+                self._send_message(chat_id, "Неверное время. Используйте ЧЧ:ММ или «-».")
+                return
+        data[field] = "" if value == "-" else value
+        next_steps = {"recipient": "phone", "phone": "address", "address": "date", "date": "time", "time": "floor", "floor": "apartment", "apartment": "intercom", "intercom": "comment"}
+        if step != "comment":
+            session["step"] = next_steps[step]
+            self._send_message(chat_id, prompt)
+            return
+        self._prepare_florist_order(chat_id, session)
+
+    def _prepare_florist_order(self, chat_id: int | str, session: dict[str, object]) -> None:
+        data = session["data"]
+        try:
+            checked = DadataAPI.check_address(str(data["street_address"]))
+            normalized = checked.get("address")
+            if isinstance(normalized, str) and normalized.strip():
+                data["street_address"] = normalized
+            latitude, longitude = checked.get("geo_lat"), checked.get("geo_lon")
+            if latitude and longitude:
+                zone_id, zone_status = self.order_store.detect_delivery_zone(float(longitude), float(latitude))
+                data.update({"latitude": float(latitude), "longitude": float(longitude), "zone_id": zone_id, "zone_source": "dadata", "zone_detection_status": zone_status})
+        except (RuntimeError, ValueError):
+            data["zone_detection_status"] = "unavailable"
+        session["step"] = "confirm"
+        preview = ("Проверьте заказ перед сохранением:\\n\\n"
+            f"Получатель: {data['recipient']}\\nТелефон: {data['phone']}\\nАдрес: {data['street_address']}\\n"
+            f"Дата: {data['order_date']}\\nВремя: {data['delivery_time'] or 'Не указано'}\\n"
+            f"Этаж: {data['floor'] or '—'}\\nКвартира: {data['apartment'] or '—'}\\n"
+            f"Домофон: {data['intercom'] or '—'}\\nКомментарий: {data['comment'] or '—'}")
+        self._send_message(chat_id, preview, reply_markup={"inline_keyboard": [[{"text": "Сохранить заказ", "callback_data": "florist:create"}, {"text": "Отменить", "callback_data": "florist:cancel"}]]})
+
+    def _handle_florist_callback(self, callback_id: object, chat_id: int | str, message_id: int, data: str) -> None:
+        key = str(chat_id)
+        session = self.florist_sessions.get(key)
+        if session is None or session.get("step") != "confirm":
+            self._api_call("answerCallbackQuery", {"callback_query_id": callback_id, "text": "Эта форма уже закрыта."})
+            return
+        if data == "florist:cancel":
+            self.florist_sessions.pop(key, None)
+            self._api_call("answerCallbackQuery", {"callback_query_id": callback_id, "text": "Создание отменено."})
+            self._api_call("editMessageText", {"chat_id": chat_id, "message_id": message_id, "text": "Создание заказа отменено."})
+            return
+        if data != "florist:create":
+            return
+        order = session["data"]
+        try:
+            order_id = self.order_store.create_order(recipient=str(order["recipient"]), phone=str(order["phone"]), street_address=str(order["street_address"]), floor=str(order.get("floor", "")), apartment=str(order.get("apartment", "")), intercom=str(order.get("intercom", "")), order_date=str(order["order_date"]), delivery_time=str(order.get("delivery_time", "")), comment=str(order.get("comment", "")), zone_id=order.get("zone_id"), zone_source=order.get("zone_source"), zone_detection_status=str(order.get("zone_detection_status", "unavailable")), latitude=order.get("latitude"), longitude=order.get("longitude"))
+        except (ValueError, sqlite3.Error):
+            self._api_call("answerCallbackQuery", {"callback_query_id": callback_id, "text": "Не удалось сохранить заказ. Проверьте данные и повторите."})
+            return
+        self.florist_sessions.pop(key, None)
+        saved = self.order_store.get_order(order_id)
+        order_no = saved.get("order_no") if saved else f"ORD-{order_id:06d}"
+        self._api_call("answerCallbackQuery", {"callback_query_id": callback_id, "text": "Заказ сохранён."})
+        self._api_call("editMessageText", {"chat_id": chat_id, "message_id": message_id, "text": f"Заказ {order_no} успешно сохранён в локальную базу Trava."})
+        if self.on_order_updated is not None:
+            self.on_order_updated()
 
     def _send_orders(self, chat_id: int | str) -> None:
         courier = self.order_store.get_courier_by_telegram_chat_id(chat_id)
@@ -347,6 +472,10 @@ class TelegramBot:
         message_id = message.get("message_id")
         user_id = sender.get("id")
         if chat_id is None or message_id is None or user_id is None:
+            return
+
+        if str(user_id) in self.florist_telegram_ids and data.startswith("florist:"):
+            self._handle_florist_callback(callback_id, chat_id, message_id, data)
             return
 
         if data == "orders:list":
