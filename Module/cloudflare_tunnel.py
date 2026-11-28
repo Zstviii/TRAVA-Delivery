@@ -76,8 +76,6 @@ class CloudflareTunnel:
             if match and self.public_url is None:
                 self.public_url = match.group(0)
                 self.on_url(self.public_url)
-                if self.on_status:
-                    self.on_status("Защищённое HTTPS-подключение создано.")
             elif self.on_status and (
                 "ERR" in line.upper() or "ERROR" in line.upper()
             ):
